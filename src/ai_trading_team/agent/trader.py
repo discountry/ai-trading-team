@@ -79,10 +79,13 @@ class LangChainTradingAgent:
         try:
             # Invoke the LLM
             response = await self._llm.ainvoke(messages)
-            raw_response = response.content
+            raw_content = response.content
+
+            # Extract text content from response (handles thinking blocks, etc.)
+            text_content = self._extract_text_content(raw_content)
 
             # Parse the response
-            command = self.parse_response(str(raw_response))
+            command = self.parse_response(text_content)
 
             # Calculate latency
             latency_ms = (time.time() - start_time) * 1000
@@ -131,6 +134,46 @@ class LangChainTradingAgent:
                 latency_ms=latency_ms,
             )
 
+    def _extract_text_content(self, content: Any) -> str:
+        """Extract text content from LLM response.
+
+        Handles different response formats:
+        - Plain string
+        - List of content blocks (thinking, text, etc.)
+        - Dict with text field
+
+        Args:
+            content: Raw LLM response content
+
+        Returns:
+            Extracted text content as string
+        """
+        # Plain string
+        if isinstance(content, str):
+            return content
+
+        # List of content blocks (e.g., from extended thinking models)
+        if isinstance(content, list):
+            text_parts = []
+            for block in content:
+                if isinstance(block, dict):
+                    # Look for 'text' type blocks or direct text field (not thinking)
+                    if block.get("type") == "text" or (
+                        "text" in block and block.get("type") != "thinking"
+                    ):
+                        text_parts.append(block.get("text", ""))
+                elif isinstance(block, str):
+                    text_parts.append(block)
+            return "\n".join(text_parts) if text_parts else str(content)
+
+        # Dict with text field
+        if isinstance(content, dict):
+            if "text" in content:
+                return str(content["text"])
+            return str(content)
+
+        return str(content)
+
     def parse_response(self, response: str) -> AgentCommand:
         """Parse LLM response into structured command.
 
@@ -143,20 +186,42 @@ class LangChainTradingAgent:
         Raises:
             ValueError: If response cannot be parsed
         """
+        import re
+
         # Extract JSON from response
         try:
-            # Try to find JSON in the response
-            json_start = response.find("{")
-            json_end = response.rfind("}") + 1
+            # First, try to extract JSON from markdown code blocks
+            # Match ```json ... ``` or ``` ... ```
+            code_block_pattern = r"```(?:json)?\s*\n?([\s\S]*?)\n?```"
+            code_blocks = re.findall(code_block_pattern, response)
 
-            if json_start == -1 or json_end == 0:
-                raise ValueError("No JSON found in response")
+            json_str = None
+            data = None
 
-            json_str = response[json_start:json_end]
-            data = json.loads(json_str)
+            # Try each code block to find valid JSON
+            for block in code_blocks:
+                block = block.strip()
+                if block.startswith("{"):
+                    try:
+                        data = json.loads(block)
+                        json_str = block
+                        break
+                    except json.JSONDecodeError:
+                        continue
+
+            # If no valid JSON in code blocks, try to find raw JSON
+            if data is None:
+                json_start = response.find("{")
+                json_end = response.rfind("}") + 1
+
+                if json_start == -1 or json_end == 0:
+                    raise ValueError("No JSON found in response")
+
+                json_str = response[json_start:json_end]
+                data = json.loads(json_str)
 
         except json.JSONDecodeError as e:
-            logger.error(f"JSON parse error: {e}, response: {response}")
+            logger.error(f"JSON parse error: {e}, response: {response[:500]}...")
             raise ValueError(f"Failed to parse JSON: {e}") from e
 
         # Parse action
@@ -424,10 +489,13 @@ class LangChainTradingAgent:
         try:
             # Invoke the LLM
             response = await self._llm.ainvoke(messages)
-            raw_response = response.content
+            raw_content = response.content
+
+            # Extract text content from response (handles thinking blocks, etc.)
+            text_content = self._extract_text_content(raw_content)
 
             # Parse the response
-            command = self.parse_response(str(raw_response))
+            command = self.parse_response(text_content)
 
             # Calculate latency
             latency_ms = (time.time() - start_time) * 1000
