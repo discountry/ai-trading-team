@@ -21,7 +21,16 @@ class BinanceStreamClient:
     """Binance Futures WebSocket stream client.
 
     Receives real-time market data from Binance USDS-M Futures.
+    Features:
+    - Automatic reconnection with exponential backoff
+    - Connection state tracking
+    - Callback-based event handling
     """
+
+    # Reconnection settings
+    MIN_RECONNECT_DELAY = 1.0  # Initial delay in seconds
+    MAX_RECONNECT_DELAY = 60.0  # Maximum delay in seconds
+    RECONNECT_MULTIPLIER = 2.0  # Exponential backoff multiplier
 
     def __init__(self) -> None:
         """Initialize Binance stream client."""
@@ -34,7 +43,13 @@ class BinanceStreamClient:
             "kline": [],
             "trade": [],
             "depth": [],
+            "reconnect": [],  # Callback for reconnection events
         }
+        # Reconnection state
+        self._reconnect_delay = self.MIN_RECONNECT_DELAY
+        self._reconnect_task: asyncio.Task | None = None
+        self._symbol: str | None = None
+        self._kline_interval: str = "1m"
 
     def _get_client(self) -> DerivativesTradingUsdsFutures:
         """Get or create Binance client."""
@@ -69,6 +84,26 @@ class BinanceStreamClient:
         """
         self._callbacks["depth"].append(callback)
 
+    def on_reconnect(self, callback: Callable[[int], None]) -> None:
+        """Register reconnection callback.
+
+        Args:
+            callback: Function to call with reconnection attempt count
+        """
+        self._callbacks["reconnect"].append(callback)
+
+    def _notify_reconnect(self, attempt: int) -> None:
+        """Notify reconnection callbacks.
+
+        Args:
+            attempt: Current reconnection attempt number
+        """
+        for callback in self._callbacks["reconnect"]:
+            try:
+                callback(attempt)
+            except Exception as e:
+                logger.error(f"Error in reconnect callback: {e}")
+
     async def connect(self, symbol: str, kline_interval: str = "1m") -> None:
         """Connect to WebSocket streams.
 
@@ -76,12 +111,17 @@ class BinanceStreamClient:
             symbol: Trading pair (e.g., "btcusdt")
             kline_interval: K-line interval (e.g., "1m", "5m")
         """
+        # Store connection parameters for reconnection
+        self._symbol = symbol
+        self._kline_interval = kline_interval
+
         client = self._get_client()
         self._running = True
 
         try:
             self._connection = await client.websocket_streams.create_connection()
             self._connected = True
+            self._reconnect_delay = self.MIN_RECONNECT_DELAY  # Reset on successful connect
             logger.info("WebSocket connection established")
 
             # Subscribe to ticker stream
@@ -215,6 +255,65 @@ class BinanceStreamClient:
                 self._connection = None
 
     async def run_forever(self) -> None:
-        """Keep the connection running."""
+        """Keep the connection running with automatic reconnection."""
+        reconnect_attempt = 0
+
         while self._running:
-            await asyncio.sleep(1)
+            if not self._connected and self._symbol:
+                reconnect_attempt += 1
+                logger.warning(
+                    f"WebSocket disconnected. Reconnecting in {self._reconnect_delay:.1f}s "
+                    f"(attempt {reconnect_attempt})..."
+                )
+                self._notify_reconnect(reconnect_attempt)
+
+                await asyncio.sleep(self._reconnect_delay)
+
+                # Exponential backoff
+                self._reconnect_delay = min(
+                    self._reconnect_delay * self.RECONNECT_MULTIPLIER,
+                    self.MAX_RECONNECT_DELAY,
+                )
+
+                try:
+                    await self.connect(self._symbol, self._kline_interval)
+                    reconnect_attempt = 0  # Reset on success
+                    logger.info("WebSocket reconnected successfully")
+                except Exception as e:
+                    logger.error(f"Reconnection failed: {e}")
+                    self._connected = False
+            else:
+                await asyncio.sleep(1)
+
+    async def _reconnect(self) -> None:
+        """Internal reconnection handler.
+
+        Called when connection is lost. Implements exponential backoff.
+        """
+        if not self._symbol:
+            logger.warning("Cannot reconnect: no symbol configured")
+            return
+
+        self._connected = False
+        reconnect_attempt = 0
+
+        while self._running and not self._connected:
+            reconnect_attempt += 1
+            logger.info(
+                f"Attempting reconnection {reconnect_attempt} in {self._reconnect_delay:.1f}s..."
+            )
+            self._notify_reconnect(reconnect_attempt)
+
+            await asyncio.sleep(self._reconnect_delay)
+
+            # Increase delay with exponential backoff
+            self._reconnect_delay = min(
+                self._reconnect_delay * self.RECONNECT_MULTIPLIER,
+                self.MAX_RECONNECT_DELAY,
+            )
+
+            try:
+                await self.connect(self._symbol, self._kline_interval)
+                logger.info("Reconnected successfully")
+            except Exception as e:
+                logger.error(f"Reconnection attempt {reconnect_attempt} failed: {e}")

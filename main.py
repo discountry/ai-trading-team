@@ -29,6 +29,7 @@ from ai_trading_team.agent.schemas import AgentDecision
 from ai_trading_team.agent.trader import LangChainTradingAgent
 from ai_trading_team.config import Config
 from ai_trading_team.core.data_pool import DataPool
+from ai_trading_team.core.session import SessionManager
 from ai_trading_team.core.types import OrderType
 from ai_trading_team.data.manager import BinanceDataManager
 from ai_trading_team.execution.mock_executor import MockExecutor
@@ -45,6 +46,7 @@ from ai_trading_team.strategy.signals import (
 from ai_trading_team.strategy.state_machine import (
     PositionContext,
     StateTransition,
+    StrategyState,
     StrategyStateMachine,
 )
 
@@ -53,6 +55,7 @@ TUI_AVAILABLE = False
 TradingApp: type | None = None
 try:
     from ai_trading_team.ui.app import TradingApp as _TradingApp
+
     TradingApp = _TradingApp
     TUI_AVAILABLE = True
 except ImportError:
@@ -76,7 +79,7 @@ def get_symbol_pair(symbol: str) -> tuple[str, str]:
 
 
 class TradingBot:
-    """Main trading bot with event-driven signal system."""
+    """Main trading bot with event-driven signal system and state recovery."""
 
     def __init__(self, config: Config) -> None:
         """Initialize trading bot.
@@ -96,6 +99,13 @@ class TradingBot:
 
         # Core components
         self._data_pool = DataPool()
+
+        # Session manager for state persistence
+        self._session_manager = SessionManager(
+            symbol=self._weex_symbol,
+            session_dir="sessions",
+            auto_save_interval=30,
+        )
 
         # Data module - Binance for market data
         self._data_manager = BinanceDataManager(
@@ -143,6 +153,10 @@ class TradingBot:
         # Pending signals to process
         self._pending_signals: list[Signal] = []
 
+        # State saving interval
+        self._last_state_save = 0.0
+        self._state_save_interval = 30.0  # Save every 30 seconds
+
     def _setup_risk_rules(self) -> None:
         """Configure risk control rules per STRATEGY.md."""
         # Force stop-loss at 25% margin loss - no agent needed
@@ -173,7 +187,9 @@ class TradingBot:
             )
         )
 
-        self._logger.info("Risk rules configured: 25% force stop, 10% profit signals, trailing stop")
+        self._logger.info(
+            "Risk rules configured: 25% force stop, 10% profit signals, trailing stop"
+        )
 
     def set_tui(self, tui_app: Any) -> None:
         """Set TUI app reference for sending updates.
@@ -215,7 +231,7 @@ class TradingBot:
             self._tui_app.add_risk_event(event_type, message)
 
     async def start(self) -> None:
-        """Start the trading bot."""
+        """Start the trading bot with state recovery support."""
         self._logger.info("=" * 60)
         self._logger.info("AI Trading Team - Event-Driven Signal System")
         self._logger.info("=" * 60)
@@ -254,6 +270,9 @@ class TradingBot:
                 self._logger.error(f"Failed to connect to WEEX: {e}")
                 return
 
+        # Attempt state recovery
+        await self._recover_state()
+
         # Start data collection from Binance with multiple timeframes
         # Note: data_manager.start() calls initialize() which fetches all required timeframes
         await self._data_manager.start(self._binance_symbol, kline_interval="1m")
@@ -263,17 +282,166 @@ class TradingBot:
             self._logger.error("Data initialization failed - cannot start signal processing")
             return
 
-        self._logger.info(
-            f"Data ready: all timeframes loaded for {self._binance_symbol}"
-        )
+        self._logger.info(f"Data ready: all timeframes loaded for {self._binance_symbol}")
 
         # Start background tasks
         asyncio.create_task(self._market_metrics_loop())
         asyncio.create_task(self._signal_update_loop())
+        asyncio.create_task(self._state_save_loop())
 
         # Main loop
         await self._run_loop()
 
+    async def _recover_state(self) -> None:
+        """Recover state from previous session.
+
+        Reconciles local saved state with actual exchange data.
+        """
+        # Check for saved session
+        if not self._session_manager.has_saved_session:
+            self._logger.info("No saved session found, starting fresh")
+            self._session_manager.create_session()
+            return
+
+        # Load saved session
+        saved_state = self._session_manager.load_session()
+        if not saved_state:
+            self._logger.warning("Failed to load saved session, starting fresh")
+            self._session_manager.create_session()
+            return
+
+        recovery_info = self._session_manager.get_recovery_info()
+        self._logger.info(f"Loaded session: {recovery_info}")
+
+        # Fetch actual position from exchange
+        try:
+            actual_position = await self._executor.get_position(self._weex_symbol)
+        except Exception as e:
+            self._logger.error(f"Failed to fetch position for recovery: {e}")
+            actual_position = None
+
+        # Reconcile state
+        saved_has_position = saved_state.position is not None
+        actual_has_position = actual_position is not None and actual_position.size > 0
+
+        if saved_has_position and actual_has_position:
+            # Both have positions - verify they match
+            self._logger.info("Recovering IN_POSITION state from saved session")
+
+            # Restore state machine to IN_POSITION
+            pos_ctx = PositionContext(
+                symbol=self._weex_symbol,
+                side=actual_position.side,
+                entry_price=actual_position.entry_price,
+                size=actual_position.size,
+                margin=actual_position.margin,
+                leverage=actual_position.leverage,
+                unrealized_pnl=actual_position.unrealized_pnl,
+            )
+            self._state_machine._context.current_state = StrategyState.IN_POSITION
+            self._state_machine._context.position = pos_ctx
+
+            # Restore P&L tracking from saved state
+            if saved_state.highest_pnl_percent:
+                self._state_machine._context.position.highest_pnl_percent = Decimal(
+                    saved_state.highest_pnl_percent
+                )
+            if saved_state.last_profit_threshold:
+                self._state_machine._context.position.last_profit_signal_threshold = Decimal(
+                    saved_state.last_profit_threshold
+                )
+
+            self._logger.info(
+                f"Recovered position: {actual_position.side.value} "
+                f"size={actual_position.size}, entry={actual_position.entry_price}"
+            )
+
+        elif not saved_has_position and actual_has_position:
+            # Exchange has position but saved state doesn't - adopt it
+            self._logger.warning(
+                "Exchange has position but saved session doesn't - adopting exchange position"
+            )
+
+            pos_ctx = PositionContext(
+                symbol=self._weex_symbol,
+                side=actual_position.side,
+                entry_price=actual_position.entry_price,
+                size=actual_position.size,
+                margin=actual_position.margin,
+                leverage=actual_position.leverage,
+                unrealized_pnl=actual_position.unrealized_pnl,
+            )
+            self._state_machine._context.current_state = StrategyState.IN_POSITION
+            self._state_machine._context.position = pos_ctx
+
+        elif saved_has_position and not actual_has_position:
+            # Saved state has position but exchange doesn't - position was closed externally
+            self._logger.warning(
+                "Saved session has position but exchange doesn't - position was closed externally"
+            )
+            self._session_manager.clear_position()
+            self._state_machine._context.current_state = StrategyState.IDLE
+
+        else:
+            # Neither has position - restore to IDLE
+            self._logger.info("No position on exchange, restoring IDLE state")
+            self._state_machine._context.current_state = StrategyState.IDLE
+
+        # Restore trade statistics
+        if saved_state.trades_today:
+            self._state_machine._context.trades_today = saved_state.trades_today
+            self._state_machine._context.wins_today = saved_state.wins_today
+            self._state_machine._context.losses_today = saved_state.losses_today
+
+        # Restore pending signals if any
+        if saved_state.pending_signals:
+            self._logger.info(f"Skipping {len(saved_state.pending_signals)} stale pending signals")
+            self._session_manager.clear_pending_signals()
+
+        # Log recovery summary
+        self._logger.info(
+            f"State recovery complete: state={self._state_machine.state.value}, "
+            f"has_position={self._state_machine.has_position}"
+        )
+
+    async def _state_save_loop(self) -> None:
+        """Periodically save state to disk."""
+        while self._running:
+            try:
+                await asyncio.sleep(self._state_save_interval)
+                self._sync_session_state()
+                self._session_manager.save_if_dirty()
+            except Exception as e:
+                self._logger.error(f"Error saving state: {e}")
+
+    def _sync_session_state(self) -> None:
+        """Sync current state to session manager."""
+        # Update strategy state
+        self._session_manager.update_strategy_state(
+            state=self._state_machine.state.value,
+            previous=self._state_machine._context.previous_state.value
+            if self._state_machine._context.previous_state
+            else None,
+        )
+
+        # Update position if in position
+        if self._state_machine.has_position:
+            pos = self._state_machine._context.position
+            if pos.side:
+                self._session_manager.update_position(
+                    symbol=self._weex_symbol,
+                    side=pos.side,
+                    size=pos.size,
+                    entry_price=pos.entry_price,
+                    margin=pos.margin,
+                    leverage=pos.leverage,
+                )
+                self._session_manager.update_pnl_tracking(
+                    highest_pnl_percent=pos.highest_pnl_percent,
+                    last_profit_threshold=pos.last_profit_signal_threshold,
+                )
+        else:
+            self._session_manager.clear_position()
 
     async def _market_metrics_loop(self) -> None:
         """Periodically fetch funding rate, long/short ratio, etc."""
@@ -284,32 +452,40 @@ class TradingBot:
                 # Fetch funding rate
                 try:
                     funding = await rest_client.get_funding_rate(self._binance_symbol)
-                    self._data_pool.update_funding_rate({
-                        "funding_rate": float(funding.funding_rate),
-                        "funding_time": funding.funding_time.isoformat() if funding.funding_time else None,
-                    })
+                    self._data_pool.update_funding_rate(
+                        {
+                            "funding_rate": float(funding.funding_rate),
+                            "funding_time": funding.funding_time.isoformat()
+                            if funding.funding_time
+                            else None,
+                        }
+                    )
                 except Exception as e:
                     self._logger.debug(f"Failed to fetch funding rate: {e}")
 
                 # Fetch long/short ratio
                 try:
                     ls_ratio = await rest_client.get_long_short_ratio(self._binance_symbol)
-                    self._data_pool.update_long_short_ratio({
-                        "long_ratio": float(ls_ratio.long_ratio),
-                        "short_ratio": float(ls_ratio.short_ratio),
-                        "long_short_ratio": float(ls_ratio.long_short_ratio),
-                        "timestamp": ls_ratio.timestamp.isoformat(),
-                    })
+                    self._data_pool.update_long_short_ratio(
+                        {
+                            "long_ratio": float(ls_ratio.long_ratio),
+                            "short_ratio": float(ls_ratio.short_ratio),
+                            "long_short_ratio": float(ls_ratio.long_short_ratio),
+                            "timestamp": ls_ratio.timestamp.isoformat(),
+                        }
+                    )
                 except Exception as e:
                     self._logger.debug(f"Failed to fetch L/S ratio: {e}")
 
                 # Fetch open interest
                 try:
                     oi = await rest_client.get_open_interest(self._binance_symbol)
-                    self._data_pool.update_open_interest({
-                        "open_interest": float(oi.open_interest),
-                        "timestamp": oi.timestamp.isoformat(),
-                    })
+                    self._data_pool.update_open_interest(
+                        {
+                            "open_interest": float(oi.open_interest),
+                            "timestamp": oi.timestamp.isoformat(),
+                        }
+                    )
                 except Exception as e:
                     self._logger.debug(f"Failed to fetch OI: {e}")
 
@@ -356,10 +532,10 @@ class TradingBot:
 
         # Refresh klines periodically for each timeframe
         timeframe_intervals = {
-            "5m": 60,      # Check 5m klines every 60s
-            "15m": 120,    # Check 15m klines every 2min
-            "1h": 300,     # Check 1h klines every 5min
-            "4h": 600,     # Check 4h klines every 10min
+            "5m": 60,  # Check 5m klines every 60s
+            "15m": 120,  # Check 15m klines every 2min
+            "1h": 300,  # Check 1h klines every 5min
+            "4h": 600,  # Check 4h klines every 10min
         }
         last_refresh: dict[str, float] = {tf: current_time for tf in timeframe_intervals}
 
@@ -463,24 +639,28 @@ class TradingBot:
         try:
             position = await self._executor.get_position(self._weex_symbol)
             if position:
-                self._data_pool.update_position({
-                    "symbol": position.symbol,
-                    "side": position.side.value,
-                    "size": float(position.size),
-                    "entry_price": float(position.entry_price),
-                    "unrealized_pnl": float(position.unrealized_pnl),
-                    "margin": float(position.margin),
-                    "leverage": position.leverage,
-                })
+                self._data_pool.update_position(
+                    {
+                        "symbol": position.symbol,
+                        "side": position.side.value,
+                        "size": float(position.size),
+                        "entry_price": float(position.entry_price),
+                        "unrealized_pnl": float(position.unrealized_pnl),
+                        "margin": float(position.margin),
+                        "leverage": position.leverage,
+                    }
+                )
             else:
                 self._data_pool.update_position(None)
 
             account = await self._executor.get_account()
-            self._data_pool.update_account({
-                "balance": float(account.total_equity),
-                "available": float(account.available_balance),
-                "margin": float(account.used_margin),
-            })
+            self._data_pool.update_account(
+                {
+                    "balance": float(account.total_equity),
+                    "available": float(account.available_balance),
+                    "margin": float(account.used_margin),
+                }
+            )
         except Exception as e:
             self._logger.debug(f"Error updating position data: {e}")
 
@@ -509,16 +689,20 @@ class TradingBot:
                         )
                         if order:
                             self._logger.info(f"Force closed position: {order.order_id}")
-                            self._notify_agent_log("CLOSE", f"Force closed {position.side.value}", "Risk triggered")
+                            self._notify_agent_log(
+                                "CLOSE", f"Force closed {position.side.value}", "Risk triggered"
+                            )
 
-                            self._data_pool.add_operation({
-                                "timestamp": datetime.now().isoformat(),
-                                "action": "force_close",
-                                "side": position.side.value,
-                                "size": float(position.size),
-                                "result": "success",
-                                "reason": action.reason,
-                            })
+                            self._data_pool.add_operation(
+                                {
+                                    "timestamp": datetime.now().isoformat(),
+                                    "action": "force_close",
+                                    "side": position.side.value,
+                                    "size": float(position.size),
+                                    "result": "success",
+                                    "reason": action.reason,
+                                }
+                            )
 
                             self._state_machine.transition(StateTransition.POSITION_CLOSED)
                             self._risk_monitor.reset_rules()
@@ -683,14 +867,16 @@ class TradingBot:
                     )
                     self._logger.info(f"Opened position: {order.order_id}")
 
-                    self._data_pool.add_operation({
+                    operation = {
                         "timestamp": datetime.now().isoformat(),
                         "action": "open",
                         "side": command.side.value,
                         "size": command.size,
                         "result": "success",
                         "order_id": order.order_id,
-                    })
+                    }
+                    self._data_pool.add_operation(operation)
+                    self._session_manager.add_operation(operation)
                     return True
 
             elif command.action == AgentAction.CLOSE and command.side:
@@ -702,34 +888,46 @@ class TradingBot:
                 if close_order:
                     self._logger.info(f"Closed position: {close_order.order_id}")
 
-                    self._data_pool.add_operation({
+                    operation = {
                         "timestamp": datetime.now().isoformat(),
                         "action": "close",
                         "side": command.side.value,
                         "size": command.size,
                         "result": "success",
                         "order_id": close_order.order_id,
-                    })
+                    }
+                    self._data_pool.add_operation(operation)
+                    self._session_manager.add_operation(operation)
                     return True
 
         except Exception as e:
             self._logger.error(f"Failed to execute command: {e}")
 
-            self._data_pool.add_operation({
+            operation = {
                 "timestamp": datetime.now().isoformat(),
                 "action": command.action.value,
                 "side": command.side.value if command.side else None,
                 "size": command.size,
                 "result": "failed",
                 "error": str(e),
-            })
+            }
+            self._data_pool.add_operation(operation)
+            self._session_manager.add_operation(operation)
 
         return False
 
     async def stop(self) -> None:
-        """Stop the trading bot."""
+        """Stop the trading bot and save state."""
         self._logger.info("Stopping trading bot...")
         self._running = False
+
+        # Save final state before stopping
+        try:
+            self._sync_session_state()
+            self._session_manager.save()
+            self._logger.info(f"Session state saved to {self._session_manager.session_file}")
+        except Exception as e:
+            self._logger.error(f"Failed to save final state: {e}")
 
         # Display simulation summary in DRY_RUN mode
         if self._config.trading.dry_run and isinstance(self._executor, MockExecutor):

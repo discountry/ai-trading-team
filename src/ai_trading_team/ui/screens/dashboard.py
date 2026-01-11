@@ -20,24 +20,24 @@ from ai_trading_team.ui.widgets import (
 class DashboardScreen(Screen[None]):
     """Main trading dashboard screen with real-time data display.
 
-    Layout:
+    Layout (3-column grid):
     ┌─────────────────────────────────────────────────────────────┐
-    │                      TICKER BAR                              │
-    ├────────────────────────┬────────────────────────────────────┤
-    │     PRICE CHART        │         ORDERBOOK                   │
-    │                        │                                     │
-    ├────────────────────────┼────────────────────────────────────┤
-    │     INDICATORS         │         POSITIONS                   │
-    │                        │         ORDERS                      │
-    ├────────────────────────┴────────────────────────────────────┤
-    │     ACTIVITY LOG               │        RISK CONTROL         │
-    └────────────────────────────────┴────────────────────────────┘
+    │                      TICKER BAR (3/3)                        │
+    ├──────────────────────────────────┬──────────────────────────┤
+    │     PRICE CHART (2/3)            │    ORDERBOOK (1/3)       │
+    │                                  │                          │
+    ├──────────────┬───────────────────┴──────────────────────────┤
+    │ INDICATORS   │         POSITIONS / ORDERS (2/3)             │
+    │    (1/3)     │                                              │
+    ├──────────────┴──────────────────────────┬───────────────────┤
+    │     ACTIVITY LOG (2/3)                  │  RISK (1/3)       │
+    └─────────────────────────────────────────┴───────────────────┘
     """
 
     CSS = """
     DashboardScreen {
         layout: grid;
-        grid-size: 2 4;
+        grid-size: 3 4;
         grid-gutter: 1;
         grid-rows: 3 1fr 1fr 1fr;
         padding: 0 1;
@@ -58,45 +58,46 @@ class DashboardScreen(Screen[None]):
 
     /* Ticker spans full width */
     #ticker-panel {
-        column-span: 2;
+        column-span: 3;
         height: 3;
     }
 
-    /* Chart panel */
+    /* Chart panel - 2/3 width */
     #chart-panel {
-        column-span: 1;
+        column-span: 2;
         row-span: 1;
         min-height: 12;
     }
 
-    /* Orderbook panel */
+    /* Orderbook panel - 1/3 width */
     #orderbook-panel {
         column-span: 1;
         row-span: 1;
         min-height: 12;
     }
 
-    /* Indicators panel */
+    /* Indicators panel - 1/3 width */
     #indicators-panel {
         column-span: 1;
         row-span: 1;
         min-height: 10;
     }
 
-    /* Positions and Orders panel */
+    /* Positions and Orders panel - 2/3 width */
     #positions-panel {
-        column-span: 1;
+        column-span: 2;
         row-span: 1;
         min-height: 10;
     }
 
-    /* Bottom row - activity log, risk */
+    /* Activity log - 2/3 width */
     #activity-panel {
-        column-span: 1;
+        column-span: 2;
         row-span: 1;
         min-height: 12;
     }
 
+    /* Risk - 1/3 width */
     #risk-panel {
         column-span: 1;
         row-span: 1;
