@@ -35,6 +35,105 @@ class DataSnapshot:
     # Symbol info (precision, etc.)
     symbol_info: dict[str, Any] | None = None
 
+    # Trading statistics
+    trading_stats: dict[str, Any] | None = None
+
+
+@dataclass
+class TradingStats:
+    """Trading session statistics."""
+
+    # Basic counters
+    total_trades: int = 0
+    winning_trades: int = 0
+    losing_trades: int = 0
+
+    # P&L tracking
+    realized_pnl: float = 0.0
+    unrealized_pnl: float = 0.0
+    largest_win: float = 0.0
+    largest_loss: float = 0.0
+    total_fees: float = 0.0
+
+    # Initial capital tracking
+    initial_balance: float = 0.0
+    current_equity: float = 0.0
+
+    # Time tracking
+    session_start: datetime | None = None
+    last_trade_time: datetime | None = None
+
+    # Per-trade details (last 20)
+    trade_history: list[dict[str, Any]] | None = None
+
+    @property
+    def win_rate(self) -> float:
+        """Calculate win rate percentage."""
+        if self.total_trades == 0:
+            return 0.0
+        return (self.winning_trades / self.total_trades) * 100
+
+    @property
+    def profit_factor(self) -> float:
+        """Calculate profit factor (gross profit / gross loss)."""
+        if self.largest_loss == 0:
+            return float("inf") if self.largest_win > 0 else 0.0
+        gross_profit = sum(
+            t.get("pnl", 0) for t in (self.trade_history or []) if t.get("pnl", 0) > 0
+        )
+        gross_loss = abs(
+            sum(t.get("pnl", 0) for t in (self.trade_history or []) if t.get("pnl", 0) < 0)
+        )
+        return gross_profit / gross_loss if gross_loss > 0 else float("inf")
+
+    @property
+    def avg_win(self) -> float:
+        """Average winning trade P&L."""
+        if self.winning_trades == 0:
+            return 0.0
+        total_wins = sum(
+            t.get("pnl", 0) for t in (self.trade_history or []) if t.get("pnl", 0) > 0
+        )
+        return total_wins / self.winning_trades
+
+    @property
+    def avg_loss(self) -> float:
+        """Average losing trade P&L."""
+        if self.losing_trades == 0:
+            return 0.0
+        total_losses = sum(
+            t.get("pnl", 0) for t in (self.trade_history or []) if t.get("pnl", 0) < 0
+        )
+        return total_losses / self.losing_trades
+
+    @property
+    def total_return_percent(self) -> float:
+        """Total return as percentage of initial balance."""
+        if self.initial_balance == 0:
+            return 0.0
+        return ((self.current_equity - self.initial_balance) / self.initial_balance) * 100
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "total_trades": self.total_trades,
+            "winning_trades": self.winning_trades,
+            "losing_trades": self.losing_trades,
+            "win_rate": round(self.win_rate, 2),
+            "realized_pnl": round(self.realized_pnl, 2),
+            "unrealized_pnl": round(self.unrealized_pnl, 2),
+            "largest_win": round(self.largest_win, 2),
+            "largest_loss": round(self.largest_loss, 2),
+            "avg_win": round(self.avg_win, 2),
+            "avg_loss": round(self.avg_loss, 2),
+            "profit_factor": round(self.profit_factor, 2) if self.profit_factor != float("inf") else "∞",
+            "total_return_percent": round(self.total_return_percent, 2),
+            "initial_balance": round(self.initial_balance, 2),
+            "current_equity": round(self.current_equity, 2),
+            "session_start": self.session_start.isoformat() if self.session_start else None,
+            "last_trade_time": self.last_trade_time.isoformat() if self.last_trade_time else None,
+        }
+
 
 class DataPool:
     """Thread-safe real-time data storage.
@@ -67,6 +166,10 @@ class DataPool:
 
         # Symbol info (precision, filters, etc.)
         self._symbol_info: dict[str, Any] | None = None
+
+        # Trading statistics
+        self._trading_stats = TradingStats()
+        self._max_trade_history = 20
 
     def subscribe(self, callback: Callable[[EventType, Any], None]) -> None:
         """Subscribe to data updates.
@@ -178,6 +281,93 @@ class DataPool:
         with self._lock:
             self._symbol_info = symbol_info
 
+    def init_trading_stats(self, initial_balance: float) -> None:
+        """Initialize trading stats at session start.
+
+        Args:
+            initial_balance: Starting account balance in USDT
+        """
+        with self._lock:
+            self._trading_stats = TradingStats(
+                initial_balance=initial_balance,
+                current_equity=initial_balance,
+                session_start=datetime.now(),
+                trade_history=[],
+            )
+
+    def record_trade(
+        self,
+        pnl: float,
+        entry_price: float,
+        exit_price: float,
+        side: str,
+        size: float,
+        fees: float = 0.0,
+    ) -> None:
+        """Record a completed trade.
+
+        Args:
+            pnl: Realized P&L for this trade
+            entry_price: Entry price
+            exit_price: Exit price
+            side: Trade side ('long' or 'short')
+            size: Position size
+            fees: Trading fees paid
+        """
+        with self._lock:
+            stats = self._trading_stats
+            now = datetime.now()
+
+            # Update counters
+            stats.total_trades += 1
+            if pnl > 0:
+                stats.winning_trades += 1
+                stats.largest_win = max(stats.largest_win, pnl)
+            elif pnl < 0:
+                stats.losing_trades += 1
+                stats.largest_loss = min(stats.largest_loss, pnl)
+
+            # Update P&L
+            stats.realized_pnl += pnl
+            stats.total_fees += fees
+            stats.last_trade_time = now
+
+            # Add to trade history
+            if stats.trade_history is None:
+                stats.trade_history = []
+
+            trade_record = {
+                "timestamp": now.isoformat(),
+                "side": side,
+                "size": size,
+                "entry_price": entry_price,
+                "exit_price": exit_price,
+                "pnl": pnl,
+                "fees": fees,
+            }
+            stats.trade_history.append(trade_record)
+
+            # Keep only last N trades
+            if len(stats.trade_history) > self._max_trade_history:
+                stats.trade_history = stats.trade_history[-self._max_trade_history:]
+
+    def update_equity(self, current_equity: float, unrealized_pnl: float = 0.0) -> None:
+        """Update current account equity and unrealized P&L.
+
+        Args:
+            current_equity: Current total equity (balance + unrealized P&L)
+            unrealized_pnl: Current unrealized P&L from open positions
+        """
+        with self._lock:
+            self._trading_stats.current_equity = current_equity
+            self._trading_stats.unrealized_pnl = unrealized_pnl
+
+    @property
+    def trading_stats(self) -> TradingStats:
+        """Get current trading statistics."""
+        with self._lock:
+            return self._trading_stats
+
     def get_snapshot(self) -> DataSnapshot:
         """Get a point-in-time snapshot of all data."""
         with self._lock:
@@ -197,6 +387,7 @@ class DataPool:
                 liquidations=list(self._liquidations) if self._liquidations else None,
                 recent_operations=list(self._recent_operations),
                 symbol_info=self._symbol_info.copy() if self._symbol_info else None,
+                trading_stats=self._trading_stats.to_dict(),
             )
 
     @property

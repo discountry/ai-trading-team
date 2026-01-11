@@ -283,19 +283,23 @@ class LangChainTradingAgent:
                 f"24h Change: {ticker.get('price_change_percent', 'N/A')}%"
             )
 
-        # Format klines (last 5)
+        # Format klines for ALL timeframes (multi-timeframe analysis)
         klines_str = "N/A"
         if snapshot.klines:
-            for interval, klines in snapshot.klines.items():
+            klines_parts = []
+            timeframe_order = ["5m", "15m", "1h", "4h"]
+            for interval in timeframe_order:
+                klines = snapshot.klines.get(interval, [])
                 if klines:
                     last_5 = klines[-5:]
-                    klines_str = f"Interval: {interval}\n"
+                    tf_lines = [f"【{interval}】 (最近5根K线):"]
                     for k in last_5:
-                        klines_str += (
+                        tf_lines.append(
                             f"  O:{k.get('open', 0):.4f} H:{k.get('high', 0):.4f} "
-                            f"L:{k.get('low', 0):.4f} C:{k.get('close', 0):.4f}\n"
+                            f"L:{k.get('low', 0):.4f} C:{k.get('close', 0):.4f}"
                         )
-                    break
+                    klines_parts.append("\n".join(tf_lines))
+            klines_str = "\n".join(klines_parts) if klines_parts else "N/A"
 
         # Format orderbook
         orderbook_str = "N/A"

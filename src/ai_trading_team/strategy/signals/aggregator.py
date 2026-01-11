@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from ai_trading_team.core.data_pool import DataPool
+from ai_trading_team.strategy.signals.adx_filter import ADXFilter
 from ai_trading_team.strategy.signals.base import SignalSource
 from ai_trading_team.strategy.signals.bollinger_breakout import BollingerBreakoutSignal
 from ai_trading_team.strategy.signals.funding_rate import FundingRateSignal
@@ -79,6 +80,7 @@ class SignalAggregator:
         data_pool: DataPool,
         symbol: str,
         confluence_config: SignalWindow | None = None,
+        adx_threshold: float = 25.0,
     ) -> None:
         """Initialize signal aggregator.
 
@@ -86,10 +88,14 @@ class SignalAggregator:
             data_pool: Shared data pool
             symbol: Trading symbol
             confluence_config: Optional confluence detection config
+            adx_threshold: Minimum ADX for entry signals (default: 25)
         """
         self._data_pool = data_pool
         self._symbol = symbol
         self._confluence_config = confluence_config or SignalWindow()
+
+        # ADX filter for entry signals
+        self._adx_filter = ADXFilter(threshold=adx_threshold, period=14)
 
         # Signal sources
         self._sources: list[SignalSource] = []
@@ -293,11 +299,32 @@ class SignalAggregator:
         """
         self._signal_callbacks.append(callback)
 
+    # Entry signal types that should be filtered by ADX
+    ENTRY_SIGNAL_TYPES = {
+        SignalType.MA_CROSS_UP,
+        SignalType.MA_CROSS_DOWN,
+        SignalType.RSI_EXIT_OVERSOLD,
+        SignalType.RSI_EXIT_OVERBOUGHT,
+        SignalType.MACD_GOLDEN_CROSS,
+        SignalType.MACD_DEATH_CROSS,
+        SignalType.BB_BREAK_UPPER,
+        SignalType.BB_BREAK_LOWER,
+        SignalType.FUNDING_SPIKE_POSITIVE,
+        SignalType.FUNDING_SPIKE_NEGATIVE,
+        SignalType.LS_RATIO_SURGE,
+        SignalType.LS_RATIO_DROP,
+        SignalType.LIQUIDATION_LONG,
+        SignalType.LIQUIDATION_SHORT,
+        SignalType.BULLISH_CONFLUENCE,
+        SignalType.BEARISH_CONFLUENCE,
+    }
+
     def update(self, timeframe: Timeframe | None = None) -> list[Signal]:
         """Update all sources and collect new signals.
 
         This should be called when new data arrives for a timeframe.
         Signals will not be generated until data is ready.
+        Entry signals are filtered by ADX trend strength.
 
         Args:
             timeframe: Specific timeframe to update, or None for all
@@ -316,12 +343,27 @@ class SignalAggregator:
         timeframes = [timeframe] if timeframe else list(Timeframe)
 
         for tf in timeframes:
+            # Pre-compute ADX for this timeframe (cached)
+            adx_allows_entry = self._adx_filter.should_allow_entry_signal(snapshot, tf)
+
             for source in self._sources:
                 if not source.enabled:
                     continue
 
                 signal = source.update(snapshot, tf)
                 if signal:
+                    # Apply ADX filter to entry signals only
+                    if signal.signal_type in self.ENTRY_SIGNAL_TYPES:
+                        if not adx_allows_entry:
+                            # Log but don't emit the signal
+                            adx_info = self._adx_filter.get_cached_adx(tf)
+                            adx_val = adx_info.adx if adx_info else "N/A"
+                            logger.info(
+                                f"ADX filter blocked entry signal: {signal.signal_type.value} "
+                                f"on {tf.value} (ADX={adx_val}, threshold={self._adx_filter.threshold})"
+                            )
+                            continue
+
                     signals.append(signal)
                     self._recent_signals.append(signal)
 
@@ -332,12 +374,18 @@ class SignalAggregator:
                         except Exception as e:
                             logger.error(f"Signal callback error: {e}")
 
-        # Check for confluence
+        # Check for confluence (also subject to ADX filter)
         if len(signals) > 0:
             confluence = self._check_confluence()
             if confluence:
-                signals.append(confluence)
-                self._recent_signals.append(confluence)
+                # Check ADX for confluence signal (use H1 as reference)
+                if self._adx_filter.should_allow_entry_signal(snapshot, Timeframe.H1):
+                    signals.append(confluence)
+                    self._recent_signals.append(confluence)
+                else:
+                    logger.info(
+                        f"ADX filter blocked confluence signal: {confluence.signal_type.value}"
+                    )
 
         return signals
 
@@ -466,6 +514,27 @@ class SignalAggregator:
                 },
             }
         return states
+
+    def get_adx_info(self) -> dict[str, Any]:
+        """Get ADX trend information for all timeframes.
+
+        Useful for including in AI context.
+
+        Returns:
+            Dictionary of ADX info per timeframe
+        """
+        snapshot = self._data_pool.get_snapshot()
+        adx_info = {}
+
+        for tf in Timeframe:
+            adx_info[tf.value] = self._adx_filter.get_trend_info(snapshot, tf)
+
+        return adx_info
+
+    @property
+    def adx_filter(self) -> ADXFilter:
+        """Get the ADX filter instance."""
+        return self._adx_filter
 
     def reset(self) -> None:
         """Reset all source states and ready status."""

@@ -30,7 +30,7 @@ from ai_trading_team.agent.trader import LangChainTradingAgent
 from ai_trading_team.config import Config
 from ai_trading_team.core.data_pool import DataPool
 from ai_trading_team.core.session import SessionManager
-from ai_trading_team.core.types import OrderType
+from ai_trading_team.core.types import OrderType, Side
 from ai_trading_team.data.manager import BinanceDataManager
 from ai_trading_team.execution.mock_executor import MockExecutor
 from ai_trading_team.execution.weex.executor import WEEXExecutor
@@ -261,6 +261,12 @@ class TradingBot:
             # Set leverage
             await self._executor.set_leverage(self._weex_symbol, self._config.trading.leverage)
             self._logger.info(f"Leverage set to {self._config.trading.leverage}x")
+
+            # Initialize trading statistics with initial balance
+            account = await self._executor.get_account()
+            initial_balance = float(account.total_equity)
+            self._data_pool.init_trading_stats(initial_balance)
+            self._logger.info(f"Trading stats initialized with balance: ${initial_balance:.2f}")
 
         except Exception as e:
             if self._config.trading.dry_run:
@@ -661,6 +667,13 @@ class TradingBot:
                     "margin": float(account.used_margin),
                 }
             )
+
+            # Update trading statistics with current equity
+            unrealized = float(position.unrealized_pnl) if position else 0.0
+            self._data_pool.update_equity(
+                current_equity=float(account.total_equity),
+                unrealized_pnl=unrealized,
+            )
         except Exception as e:
             self._logger.debug(f"Error updating position data: {e}")
 
@@ -682,6 +695,17 @@ class TradingBot:
 
                     position = await self._executor.get_position(self._weex_symbol)
                     if position:
+                        # Capture position info before closing for trade recording
+                        entry_price = float(position.entry_price)
+                        exit_price = float(
+                            self._data_pool.ticker.get("last_price", 0)
+                            if self._data_pool.ticker
+                            else 0
+                        )
+                        realized_pnl = float(position.unrealized_pnl)
+                        trade_side = position.side.value
+                        trade_size = float(position.size)
+
                         order = await self._executor.close_position(
                             symbol=self._weex_symbol,
                             side=position.side,
@@ -693,12 +717,25 @@ class TradingBot:
                                 "CLOSE", f"Force closed {position.side.value}", "Risk triggered"
                             )
 
+                            # Record the trade in trading statistics
+                            self._data_pool.record_trade(
+                                pnl=realized_pnl,
+                                entry_price=entry_price,
+                                exit_price=exit_price,
+                                side=trade_side,
+                                size=trade_size,
+                            )
+                            self._logger.info(
+                                f"Trade recorded: {trade_side} P&L=${realized_pnl:+.2f}"
+                            )
+
                             self._data_pool.add_operation(
                                 {
                                     "timestamp": datetime.now().isoformat(),
                                     "action": "force_close",
                                     "side": position.side.value,
                                     "size": float(position.size),
+                                    "pnl": realized_pnl,
                                     "result": "success",
                                     "reason": action.reason,
                                 }
@@ -838,7 +875,11 @@ class TradingBot:
             self._logger.warning(f"Failed to upload AI log: {e}")
 
     async def _execute_command(self, decision: AgentDecision) -> bool:
-        """Execute agent command.
+        """Execute agent command with risk controls.
+
+        Implements:
+        1. 750$ max margin limit check
+        2. 30% stop loss order placement on exchange
 
         Args:
             decision: Agent decision with command to execute
@@ -854,9 +895,59 @@ class TradingBot:
             self._logger.error(f"Command validation failed: {errors}")
             return False
 
+        # Constants for risk control
+        MAX_MARGIN_LIMIT = 750.0  # Maximum margin usage in USDT
+        STOP_LOSS_PERCENT = 30.0  # Stop loss at 30% margin loss
+
         try:
             if command.action == AgentAction.OPEN:
                 if command.side and command.size:
+                    # Get current account to check margin
+                    account = await self._executor.get_account()
+                    current_margin = float(account.used_margin)
+
+                    # Get current price for margin calculation
+                    snapshot = self._data_pool.get_snapshot()
+                    current_price = float(
+                        snapshot.ticker.get("last_price", 0) if snapshot.ticker else 0
+                    )
+                    if current_price <= 0:
+                        self._logger.error("Cannot get current price for margin calculation")
+                        return False
+
+                    # Calculate margin for this order
+                    # Margin = Position Value / Leverage = (Size * Price) / Leverage
+                    leverage = self._config.trading.leverage
+                    order_margin = (command.size * current_price) / leverage
+
+                    # Check if adding this position would exceed margin limit
+                    total_margin = current_margin + order_margin
+                    if total_margin > MAX_MARGIN_LIMIT:
+                        self._logger.warning(
+                            f"Order rejected: would exceed margin limit. "
+                            f"Current: ${current_margin:.2f}, Order: ${order_margin:.2f}, "
+                            f"Total: ${total_margin:.2f}, Limit: ${MAX_MARGIN_LIMIT}"
+                        )
+                        self._notify_risk_event(
+                            "MARGIN_LIMIT",
+                            f"Order rejected: ${total_margin:.0f} exceeds ${MAX_MARGIN_LIMIT} limit",
+                        )
+                        return False
+
+                    # Calculate stop loss price at 30% margin loss
+                    # For LONG: Stop Price = Entry * (1 - 30% / Leverage)
+                    # For SHORT: Stop Price = Entry * (1 + 30% / Leverage)
+                    stop_loss_offset = STOP_LOSS_PERCENT / 100 / leverage
+                    if command.side == Side.LONG:
+                        stop_loss_price = current_price * (1 - stop_loss_offset)
+                    else:  # SHORT
+                        stop_loss_price = current_price * (1 + stop_loss_offset)
+
+                    self._logger.info(
+                        f"Opening position: {command.side.value} {command.size} @ ~{current_price:.4f}, "
+                        f"margin: ${order_margin:.2f}, stop loss: {stop_loss_price:.4f}"
+                    )
+
                     order = await self._executor.place_order(
                         symbol=self._weex_symbol,
                         side=command.side,
@@ -864,6 +955,7 @@ class TradingBot:
                         size=command.size,
                         price=command.price,
                         action="open",
+                        stop_loss_price=stop_loss_price,
                     )
                     self._logger.info(f"Opened position: {order.order_id}")
 
@@ -872,6 +964,8 @@ class TradingBot:
                         "action": "open",
                         "side": command.side.value,
                         "size": command.size,
+                        "margin": order_margin,
+                        "stop_loss_price": stop_loss_price,
                         "result": "success",
                         "order_id": order.order_id,
                     }
@@ -880,6 +974,17 @@ class TradingBot:
                     return True
 
             elif command.action == AgentAction.CLOSE and command.side:
+                # Get position info before closing for trade recording
+                position = await self._executor.get_position(self._weex_symbol)
+                entry_price = float(position.entry_price) if position else 0.0
+                exit_price = float(
+                    self._data_pool.ticker.get("last_price", 0)
+                    if self._data_pool.ticker
+                    else 0
+                )
+                realized_pnl = float(position.unrealized_pnl) if position else 0.0
+                trade_size = float(position.size) if position else command.size or 0.0
+
                 close_order = await self._executor.close_position(
                     symbol=self._weex_symbol,
                     side=command.side,
@@ -888,11 +993,24 @@ class TradingBot:
                 if close_order:
                     self._logger.info(f"Closed position: {close_order.order_id}")
 
+                    # Record the trade in trading statistics
+                    self._data_pool.record_trade(
+                        pnl=realized_pnl,
+                        entry_price=entry_price,
+                        exit_price=exit_price,
+                        side=command.side.value,
+                        size=trade_size,
+                    )
+                    self._logger.info(
+                        f"Trade recorded: {command.side.value} P&L=${realized_pnl:+.2f}"
+                    )
+
                     operation = {
                         "timestamp": datetime.now().isoformat(),
                         "action": "close",
                         "side": command.side.value,
                         "size": command.size,
+                        "pnl": realized_pnl,
                         "result": "success",
                         "order_id": close_order.order_id,
                     }

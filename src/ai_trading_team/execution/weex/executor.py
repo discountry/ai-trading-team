@@ -168,6 +168,8 @@ class WEEXExecutor:
         size: float,
         price: float | None = None,
         action: str = "open",  # open/close
+        stop_loss_price: float | None = None,
+        take_profit_price: float | None = None,
     ) -> Order:
         """Place a new order.
 
@@ -178,6 +180,8 @@ class WEEXExecutor:
             size: Order size
             price: Limit price (required for LIMIT orders)
             action: "open" for opening position, "close" for closing
+            stop_loss_price: Preset stop loss price (for open orders)
+            take_profit_price: Preset take profit price (for open orders)
 
         Returns:
             Created Order object
@@ -211,6 +215,15 @@ class WEEXExecutor:
 
         if order_type == OrderType.LIMIT and price is not None:
             order_params["price"] = str(price)
+
+        # Add preset stop loss if provided (for opening positions)
+        if action == "open" and stop_loss_price is not None:
+            order_params["preset_stop_loss_price"] = str(stop_loss_price)
+            logger.info(f"Setting preset stop loss at {stop_loss_price}")
+
+        # Add preset take profit if provided
+        if action == "open" and take_profit_price is not None:
+            order_params["preset_take_profit_price"] = str(take_profit_price)
 
         logger.info(f"Placing order: {order_params}")
 

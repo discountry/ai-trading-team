@@ -1,0 +1,18 @@
+{
+  "session_id": "20260112_011536",
+  "symbol": "cmt_dogeusdt",
+  "started_at": "2026-01-12T01:15:36.870186",
+  "last_updated": "2026-01-12T01:42:20.128622",
+  "strategy_state": "analyzing",
+  "previous_state": "idle",
+  "position": null,
+  "last_signal_type": null,
+  "last_signal_time": null,
+  "trades_today": 0,
+  "wins_today": 0,
+  "losses_today": 0,
+  "highest_pnl_percent": "0",
+  "last_profit_threshold": "0",
+  "operations": [],
+  "pending_signals": []
+}

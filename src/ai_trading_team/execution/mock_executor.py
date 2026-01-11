@@ -149,12 +149,31 @@ class MockExecutor:
         size: float,
         price: float | None = None,
         action: str = "open",
+        stop_loss_price: float | None = None,
+        take_profit_price: float | None = None,
     ) -> Order:
         """Place a simulated order.
 
         For market orders, executes immediately.
         For limit orders, adds to pending orders.
+
+        Args:
+            symbol: Trading pair
+            side: Order side
+            order_type: Order type
+            size: Order size
+            price: Limit price
+            action: "open" or "close"
+            stop_loss_price: Preset stop loss price (logged in mock mode)
+            take_profit_price: Preset take profit price (logged in mock mode)
         """
+        # Log stop loss/take profit for debugging in mock mode
+        if action == "open":
+            if stop_loss_price is not None:
+                logger.info(f"[MOCK] Preset stop loss: {stop_loss_price}")
+            if take_profit_price is not None:
+                logger.info(f"[MOCK] Preset take profit: {take_profit_price}")
+
         client_oid = f"mock_{uuid.uuid4().hex[:16]}"
         order_id = f"mock_order_{uuid.uuid4().hex[:8]}"
 
