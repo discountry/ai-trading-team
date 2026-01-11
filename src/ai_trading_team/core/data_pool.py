@@ -32,6 +32,9 @@ class DataSnapshot:
     # Recent operation history for agent context
     recent_operations: list[dict[str, Any]] | None = None
 
+    # Symbol info (precision, etc.)
+    symbol_info: dict[str, Any] | None = None
+
 
 class DataPool:
     """Thread-safe real-time data storage.
@@ -61,6 +64,9 @@ class DataPool:
         # Recent operation history (last 10)
         self._recent_operations: list[dict[str, Any]] = []
         self._max_operations_history = 10
+
+        # Symbol info (precision, filters, etc.)
+        self._symbol_info: dict[str, Any] | None = None
 
     def subscribe(self, callback: Callable[[EventType, Any], None]) -> None:
         """Subscribe to data updates.
@@ -167,6 +173,11 @@ class DataPool:
             if len(self._recent_operations) > self._max_operations_history:
                 self._recent_operations = self._recent_operations[-self._max_operations_history:]
 
+    def update_symbol_info(self, symbol_info: dict[str, Any]) -> None:
+        """Update symbol info (precision, filters, etc.)."""
+        with self._lock:
+            self._symbol_info = symbol_info
+
     def get_snapshot(self) -> DataSnapshot:
         """Get a point-in-time snapshot of all data."""
         with self._lock:
@@ -185,6 +196,7 @@ class DataPool:
                 mark_price=self._mark_price.copy() if self._mark_price else None,
                 liquidations=list(self._liquidations) if self._liquidations else None,
                 recent_operations=list(self._recent_operations),
+                symbol_info=self._symbol_info.copy() if self._symbol_info else None,
             )
 
     @property

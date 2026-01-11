@@ -123,10 +123,13 @@ class IndicatorsWidget(Static):
         else:
             self._update_indicator("ind-bb", "BB:       --", "neutral")
 
-        # Funding Rate
+        # Funding Rate (API returns decimal, e.g., -0.00001154 = -0.001154%)
         funding = data.get("funding_rate")
         if funding is not None:
-            funding_pct = funding * 100 if abs(funding) < 0.01 else funding
+            # Convert to percentage (multiply by 100)
+            funding_pct = float(funding) * 100
+            # High positive = bearish (longs pay shorts)
+            # Negative = bullish (shorts pay longs)
             if funding_pct > 0.03:
                 f_class = "bearish"
             elif funding_pct < -0.01:

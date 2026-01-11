@@ -57,6 +57,33 @@ class BinanceRestClient:
             self._client = DerivativesTradingUsdsFutures(config_rest_api=config)
         return self._client
 
+    async def get_symbol_info(self, symbol: str) -> dict[str, Any]:
+        """Get symbol trading rules and precision.
+
+        Args:
+            symbol: Trading pair (e.g., "BTCUSDT")
+
+        Returns:
+            Dict with pricePrecision, quantityPrecision, etc.
+        """
+        client = self._get_client()
+
+        def _fetch() -> dict[str, Any]:
+            response = client.rest_api.exchange_information()
+            data = response.data()
+            if hasattr(data, "to_dict"):
+                data = data.to_dict()
+
+            symbols = data.get("symbols", [])
+            for s in symbols:
+                if hasattr(s, "to_dict"):
+                    s = s.to_dict()
+                if s.get("symbol") == symbol:
+                    return s
+            return {}
+
+        return await asyncio.to_thread(_fetch)
+
     async def get_ticker(self, symbol: str) -> Ticker:
         """Get current ticker for a symbol.
 
@@ -146,18 +173,39 @@ class BinanceRestClient:
 
         def _fetch() -> dict[str, Any]:
             response = client.rest_api.order_book(symbol=symbol, limit=limit)
-            return response.data()  # type: ignore[no-any-return]
+            data = response.data()
+            # Convert Pydantic model to dict if needed
+            if hasattr(data, "to_dict"):
+                return data.to_dict()
+            elif hasattr(data, "model_dump"):
+                return data.model_dump()
+            return data
 
         data = await asyncio.to_thread(_fetch)
 
-        bids = [
-            OrderBookLevel(price=Decimal(str(b[0])), quantity=Decimal(str(b[1])))
-            for b in data.get("bids", [])
-        ]
-        asks = [
-            OrderBookLevel(price=Decimal(str(a[0])), quantity=Decimal(str(a[1])))
-            for a in data.get("asks", [])
-        ]
+        bids = []
+        asks = []
+
+        def parse_level(item: Any) -> tuple[Decimal, Decimal] | None:
+            """Parse a price level from various formats."""
+            if hasattr(item, "root"):
+                price, qty = item.root
+                return Decimal(str(price)), Decimal(str(qty))
+            elif isinstance(item, list | tuple) and len(item) >= 2:
+                return Decimal(str(item[0])), Decimal(str(item[1]))
+            return None
+
+        # Handle bids
+        for b in data.get("bids", []):
+            level = parse_level(b)
+            if level:
+                bids.append(OrderBookLevel(price=level[0], quantity=level[1]))
+
+        # Handle asks
+        for a in data.get("asks", []):
+            level = parse_level(a)
+            if level:
+                asks.append(OrderBookLevel(price=level[0], quantity=level[1]))
 
         return OrderBook(
             symbol=symbol,
@@ -170,6 +218,8 @@ class BinanceRestClient:
     async def get_funding_rate(self, symbol: str) -> FundingRate:
         """Get current funding rate.
 
+        Uses mark_price endpoint which provides the current/next funding rate.
+
         Args:
             symbol: Trading pair
 
@@ -179,21 +229,29 @@ class BinanceRestClient:
         client = self._get_client()
 
         def _fetch() -> dict[str, Any]:
-            response = client.rest_api.get_funding_rate_info()
+            response = client.rest_api.mark_price(symbol=symbol)
             data = response.data()
-            # Find the specific symbol
-            for item in data:
-                if item.get("symbol") == symbol:
-                    return item  # type: ignore[no-any-return]
-            return {}
+            if hasattr(data, "to_dict"):
+                return data.to_dict()
+            elif hasattr(data, "model_dump"):
+                return data.model_dump()
+            return data
 
         data = await asyncio.to_thread(_fetch)
+
+        # Parse next funding time
+        next_funding_ms = data.get("nextFundingTime", 0)
+        funding_time = (
+            datetime.fromtimestamp(next_funding_ms / 1000)
+            if next_funding_ms
+            else datetime.now()
+        )
 
         return FundingRate(
             symbol=symbol,
             funding_rate=Decimal(str(data.get("lastFundingRate", 0))),
-            funding_time=datetime.now(),
-            mark_price=None,
+            funding_time=funding_time,
+            mark_price=Decimal(str(data.get("markPrice", 0))),
         )
 
     async def get_mark_price(self, symbol: str) -> dict[str, Any]:
@@ -226,7 +284,9 @@ class BinanceRestClient:
 
         def _fetch() -> dict[str, Any]:
             response = client.rest_api.open_interest(symbol=symbol)
-            return response.data()  # type: ignore[no-any-return]
+            data = response.data()
+            # Convert Pydantic model to dict if needed
+            return data.to_dict() if hasattr(data, "to_dict") else data
 
         data = await asyncio.to_thread(_fetch)
 

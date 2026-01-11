@@ -6,14 +6,13 @@ from textual.screen import Screen
 from textual.widgets import Static
 
 from ai_trading_team.ui.widgets import (
-    AgentLogsWidget,
+    ActivityLogWidget,
     IndicatorsWidget,
     OrderBookWidget,
     OrdersWidget,
     PositionsWidget,
     PriceChartWidget,
     RiskWidget,
-    SignalsWidget,
     TickerWidget,
 )
 
@@ -31,14 +30,14 @@ class DashboardScreen(Screen[None]):
     │     INDICATORS         │         POSITIONS                   │
     │                        │         ORDERS                      │
     ├────────────────────────┴────────────────────────────────────┤
-    │  SIGNALS   │     AGENT LOGS      │        RISK               │
-    └────────────┴─────────────────────┴──────────────────────────┘
+    │     ACTIVITY LOG               │        RISK CONTROL         │
+    └────────────────────────────────┴────────────────────────────┘
     """
 
     CSS = """
     DashboardScreen {
         layout: grid;
-        grid-size: 3 4;
+        grid-size: 2 4;
         grid-gutter: 1;
         grid-rows: 3 1fr 1fr 1fr;
         padding: 0 1;
@@ -59,13 +58,13 @@ class DashboardScreen(Screen[None]):
 
     /* Ticker spans full width */
     #ticker-panel {
-        column-span: 3;
+        column-span: 2;
         height: 3;
     }
 
     /* Chart panel */
     #chart-panel {
-        column-span: 2;
+        column-span: 1;
         row-span: 1;
         min-height: 12;
     }
@@ -86,28 +85,22 @@ class DashboardScreen(Screen[None]):
 
     /* Positions and Orders panel */
     #positions-panel {
-        column-span: 2;
-        row-span: 1;
-        min-height: 10;
-    }
-
-    /* Bottom row - signals, agent logs, risk */
-    #signals-panel {
         column-span: 1;
         row-span: 1;
         min-height: 10;
     }
 
-    #agent-panel {
+    /* Bottom row - activity log, risk */
+    #activity-panel {
         column-span: 1;
         row-span: 1;
-        min-height: 10;
+        min-height: 12;
     }
 
     #risk-panel {
         column-span: 1;
         row-span: 1;
-        min-height: 10;
+        min-height: 12;
     }
 
     /* Panel content sizing */
@@ -161,14 +154,10 @@ class DashboardScreen(Screen[None]):
                 yield Static("Open Orders", classes="panel-title")
                 yield OrdersWidget(id="orders-widget")
 
-        # Row 4: Signals, Agent Logs, Risk
-        with Container(id="signals-panel", classes="panel"):
-            yield Static("Signals", classes="panel-title")
-            yield SignalsWidget(id="signals-widget")
-
-        with Container(id="agent-panel", classes="panel"):
-            yield Static("AI Agent Logs", classes="panel-title")
-            yield AgentLogsWidget(id="agent-widget")
+        # Row 4: Activity Log, Risk
+        with Container(id="activity-panel", classes="panel"):
+            yield Static("Activity Log", classes="panel-title")
+            yield ActivityLogWidget(id="activity-widget")
 
         with Container(id="risk-panel", classes="panel"):
             yield Static("Risk Control", classes="panel-title")
@@ -206,14 +195,9 @@ class DashboardScreen(Screen[None]):
         return self.query_one("#orders-widget", OrdersWidget)
 
     @property
-    def signals_widget(self) -> SignalsWidget:
-        """Get signals widget."""
-        return self.query_one("#signals-widget", SignalsWidget)
-
-    @property
-    def agent_widget(self) -> AgentLogsWidget:
-        """Get agent logs widget."""
-        return self.query_one("#agent-widget", AgentLogsWidget)
+    def activity_widget(self) -> ActivityLogWidget:
+        """Get activity log widget."""
+        return self.query_one("#activity-widget", ActivityLogWidget)
 
     @property
     def risk_widget(self) -> RiskWidget:

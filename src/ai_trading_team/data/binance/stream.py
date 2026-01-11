@@ -61,6 +61,14 @@ class BinanceStreamClient:
         """
         self._callbacks["kline"].append(callback)
 
+    def on_depth(self, callback: Callable[[list, list], None]) -> None:
+        """Register depth (orderbook) callback.
+
+        Args:
+            callback: Function to call with (bids, asks) updates
+        """
+        self._callbacks["depth"].append(callback)
+
     async def connect(self, symbol: str, kline_interval: str = "1m") -> None:
         """Connect to WebSocket streams.
 
@@ -91,6 +99,13 @@ class BinanceStreamClient:
             )
             kline_stream.on("message", self._handle_kline)
             logger.info(f"Subscribed to kline stream: {symbol_lower}@{kline_interval}")
+
+            # Subscribe to depth stream for orderbook updates
+            depth_stream = await self._connection.diff_book_depth_streams(
+                symbol=symbol_lower,
+            )
+            depth_stream.on("message", self._handle_depth)
+            logger.info(f"Subscribed to depth stream: {symbol_lower}@depth")
 
         except Exception as e:
             self._connected = False
@@ -149,6 +164,37 @@ class BinanceStreamClient:
 
         except Exception as e:
             logger.error(f"Error handling kline: {e}")
+
+    def _handle_depth(self, message: Any) -> None:
+        """Handle incoming depth (orderbook) data."""
+        try:
+            # Convert Pydantic model to dict first (like ticker/kline handlers)
+            data = message.to_dict() if hasattr(message, "to_dict") else message
+
+            bids = []
+            asks = []
+
+            # Get bids from 'b' key (WebSocket uses short names)
+            for item in data.get("b", []):
+                if isinstance(item, list | tuple) and len(item) >= 2:
+                    bids.append([str(item[0]), str(item[1])])
+
+            # Get asks from 'a' key
+            for item in data.get("a", []):
+                if isinstance(item, list | tuple) and len(item) >= 2:
+                    asks.append([str(item[0]), str(item[1])])
+
+            # Log first update to verify data structure
+            if bids or asks:
+                if bids:
+                    logger.debug(f"Depth bids sample: {bids[0] if bids else 'none'}")
+                if asks:
+                    logger.debug(f"Depth asks sample: {asks[0] if asks else 'none'}")
+                for callback in self._callbacks["depth"]:
+                    callback(bids, asks)
+
+        except Exception as e:
+            logger.error(f"Error handling depth: {e}")
 
     @property
     def is_connected(self) -> bool:

@@ -22,6 +22,7 @@ import logging
 import signal
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 
 from ai_trading_team.agent.commands import AgentAction
 from ai_trading_team.agent.schemas import AgentDecision
@@ -46,6 +47,16 @@ from ai_trading_team.strategy.state_machine import (
     StateTransition,
     StrategyStateMachine,
 )
+
+# TUI support - imported only when needed
+TUI_AVAILABLE = False
+TradingApp: type | None = None
+try:
+    from ai_trading_team.ui.app import TradingApp as _TradingApp
+    TradingApp = _TradingApp
+    TUI_AVAILABLE = True
+except ImportError:
+    pass
 
 
 def get_symbol_pair(symbol: str) -> tuple[str, str]:
@@ -76,6 +87,9 @@ class TradingBot:
         self._config = config
         self._logger = logging.getLogger(__name__)
         self._running = False
+
+        # TUI reference for sending updates (set externally)
+        self._tui_app: Any = None
 
         # Convert trading symbol to exchange-specific formats
         self._binance_symbol, self._weex_symbol = get_symbol_pair(config.trading.symbol)
@@ -160,6 +174,45 @@ class TradingBot:
         )
 
         self._logger.info("Risk rules configured: 25% force stop, 10% profit signals, trailing stop")
+
+    def set_tui(self, tui_app: Any) -> None:
+        """Set TUI app reference for sending updates.
+
+        Args:
+            tui_app: TradingApp instance
+        """
+        self._tui_app = tui_app
+
+    def _notify_signal(self, signal_type: str, details: str) -> None:
+        """Send signal notification to TUI.
+
+        Args:
+            signal_type: Type of signal
+            details: Signal details
+        """
+        if self._tui_app:
+            self._tui_app.add_signal(signal_type, details)
+
+    def _notify_agent_log(self, action: str, details: str, result: str = "") -> None:
+        """Send agent log to TUI.
+
+        Args:
+            action: Action taken
+            details: Action details
+            result: Result of action
+        """
+        if self._tui_app:
+            self._tui_app.add_agent_log(action, details, result)
+
+    def _notify_risk_event(self, event_type: str, message: str) -> None:
+        """Send risk event to TUI.
+
+        Args:
+            event_type: Type of risk event
+            message: Event message
+        """
+        if self._tui_app:
+            self._tui_app.add_risk_event(event_type, message)
 
     async def start(self) -> None:
         """Start the trading bot."""
@@ -440,10 +493,12 @@ class TradingBot:
             action = await self._risk_monitor.evaluate()
             if action:
                 self._logger.warning(f"Risk action triggered: {action.reason}")
+                self._notify_risk_event("WARNING", action.reason)
 
                 # Force close for high-priority risk actions
                 if action.priority >= 80:
                     self._logger.critical(f"FORCE CLOSING POSITION: {action.reason}")
+                    self._notify_risk_event("STOP_LOSS", f"Force close: {action.reason}")
 
                     position = await self._executor.get_position(self._weex_symbol)
                     if position:
@@ -454,6 +509,7 @@ class TradingBot:
                         )
                         if order:
                             self._logger.info(f"Force closed position: {order.order_id}")
+                            self._notify_agent_log("CLOSE", f"Force closed {position.side.value}", "Risk triggered")
 
                             self._data_pool.add_operation({
                                 "timestamp": datetime.now().isoformat(),
@@ -486,9 +542,14 @@ class TradingBot:
             self._logger.debug(f"Not idle, skipping signal: {signal.signal_type.value}")
             return
 
-        self._logger.info(f"🤖 Processing signal: {signal.signal_type.value}")
-        self._logger.info(f"🤖 {signal.description}")
-        self._logger.info("🤖 Calling AI agent for trading decision...")
+        self._logger.info(f"Processing signal: {signal.signal_type.value}")
+        self._logger.info(f"{signal.description}")
+
+        # Notify TUI about the signal
+        self._notify_signal(signal.signal_type.value, signal.description)
+
+        self._logger.info("Calling AI agent for trading decision...")
+        self._notify_agent_log("SIGNAL", signal.signal_type.value, signal.description)
 
         # Transition to analyzing state
         self._state_machine.transition(
@@ -532,12 +593,21 @@ class TradingBot:
         # Get agent decision
         decision = await self._agent.process_signal(strategy_signal, snapshot)
         self._logger.info(
-            f"🤖 Agent decision: {decision.command.action.value} - {decision.command.reason[:100]}"
+            f"Agent decision: {decision.command.action.value} - {decision.command.reason[:100]}"
+        )
+
+        # Notify TUI about agent decision
+        self._notify_agent_log(
+            decision.command.action.value.upper(),
+            f"{decision.command.side.value if decision.command.side else 'N/A'} "
+            f"size={decision.command.size or 'N/A'}",
+            decision.command.reason[:60],
         )
 
         # Handle agent decision
         if decision.command.action == AgentAction.OBSERVE:
             self._state_machine.transition(StateTransition.AGENT_OBSERVE)
+            self._notify_agent_log("OBSERVE", "No action taken", "Watching market")
         elif decision.command.action in (AgentAction.OPEN, AgentAction.ADD):
             if decision.command.is_actionable():
                 success = await self._execute_command(decision)
@@ -686,10 +756,24 @@ class TradingBot:
         self._logger.info("Trading bot stopped")
 
 
-async def main_async() -> None:
-    """Async main entry point."""
+async def main_async(use_tui: bool = False) -> None:
+    """Async main entry point.
+
+    Args:
+        use_tui: Whether to start with TUI interface
+    """
     logger = setup_logging()
     config = Config.from_env()
+
+    # Suppress console logging when using TUI
+    if use_tui:
+        # Remove console handlers to avoid interference with TUI
+        root_logger = logging.getLogger()
+        for handler in root_logger.handlers[:]:
+            if hasattr(handler, "stream"):
+                root_logger.removeHandler(handler)
+        # Keep file handler only
+        logging.getLogger(__name__).setLevel(logging.WARNING)
 
     bot = TradingBot(config)
 
@@ -704,7 +788,30 @@ async def main_async() -> None:
         loop.add_signal_handler(sig, shutdown_handler)
 
     try:
-        await bot.start()
+        if use_tui and TUI_AVAILABLE and TradingApp is not None:
+            # Start TUI with data pool integration
+            tui_app = TradingApp(
+                data_pool=bot._data_pool,
+                symbol=bot._binance_symbol,
+            )
+
+            # Connect TUI to bot for signal/log notifications
+            bot.set_tui(tui_app)
+
+            # Start bot in background
+            bot_task = asyncio.create_task(bot.start())
+
+            # Run TUI (blocks until quit)
+            await tui_app.run_async()
+
+            # Stop bot when TUI exits
+            await bot.stop()
+            bot_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await bot_task
+        else:
+            # Run without TUI
+            await bot.start()
     except KeyboardInterrupt:
         logger.info("Keyboard interrupt received")
     finally:
@@ -713,8 +820,17 @@ async def main_async() -> None:
 
 def main() -> None:
     """Application entry point."""
+    import sys
+
+    # Check for --tui flag
+    use_tui = "--tui" in sys.argv or "-t" in sys.argv
+
+    if use_tui and not TUI_AVAILABLE:
+        print("TUI not available. Install with: uv sync --all-extras")
+        sys.exit(1)
+
     with contextlib.suppress(KeyboardInterrupt):
-        asyncio.run(main_async())
+        asyncio.run(main_async(use_tui=use_tui))
 
 
 if __name__ == "__main__":

@@ -67,7 +67,20 @@ class PriceChartWidget(Static):
             if min_price != max_price:
                 plt.ylim(min_price * 0.999, max_price * 1.001)
 
-            plt.xlabel("Time")
+            # Set x-axis labels with time
+            if self._times:
+                times_list = list(self._times)
+                num_labels = min(5, len(times_list))  # Show at most 5 labels
+                if num_labels > 1:
+                    step = max(1, len(times_list) // (num_labels - 1))
+                    x_ticks = [i for i in range(0, len(times_list), step)]
+                    x_labels = [times_list[i] for i in x_ticks if i < len(times_list)]
+                    # Ensure we include the last point
+                    if x_ticks[-1] != len(times_list) - 1:
+                        x_ticks.append(len(times_list) - 1)
+                        x_labels.append(times_list[-1])
+                    plt.xticks(x_ticks, x_labels)
+
             plt.ylabel("Price")
         else:
             plt.title(f"{self._symbol} - Waiting for data...")

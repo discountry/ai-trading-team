@@ -2,7 +2,6 @@
 
 import asyncio
 import contextlib
-from datetime import datetime
 from typing import Any
 
 from textual.app import App, ComposeResult
@@ -59,6 +58,7 @@ class TradingApp(App[None]):
         self._symbol = symbol
         self._update_task: asyncio.Task | None = None
         self._running = False
+        self._precision_set = False  # Track if orderbook precision has been set
 
     def compose(self) -> ComposeResult:
         """Compose the application layout."""
@@ -106,12 +106,14 @@ class TradingApp(App[None]):
         # Update ticker
         if snapshot.ticker:
             ticker = snapshot.ticker
+            # Use symbol precision if available
+            pp = snapshot.symbol_info.get("pricePrecision", 4) if snapshot.symbol_info else 4
             dashboard.ticker_widget.update_ticker(
                 symbol=self._symbol,
-                price=f"{float(ticker.get('last_price', 0)):.4f}",
+                price=f"{float(ticker.get('last_price', 0)):.{pp}f}",
                 change=f"{float(ticker.get('price_change_percent', 0)):+.2f}%",
-                high=f"{float(ticker.get('high_price', 0)):.4f}",
-                low=f"{float(ticker.get('low_price', 0)):.4f}",
+                high=f"{float(ticker.get('high_price', 0)):.{pp}f}",
+                low=f"{float(ticker.get('low_price', 0)):.{pp}f}",
                 volume=f"{float(ticker.get('volume', 0)):,.0f}",
             )
 
@@ -120,6 +122,13 @@ class TradingApp(App[None]):
             klines = snapshot.klines.get("1m", [])
             if klines:
                 dashboard.chart_widget.set_klines(klines, self._symbol)
+
+        # Set orderbook precision from symbol info (once)
+        if not self._precision_set and snapshot.symbol_info:
+            price_precision = snapshot.symbol_info.get("pricePrecision", 4)
+            qty_precision = snapshot.symbol_info.get("quantityPrecision", 0)
+            dashboard.orderbook_widget.set_precision(price_precision, qty_precision)
+            self._precision_set = True
 
         # Update orderbook
         if snapshot.orderbook:
@@ -185,14 +194,16 @@ class TradingApp(App[None]):
         # Get klines for calculation
         if snapshot.klines:
             klines = snapshot.klines.get("1h", [])
-            if len(klines) >= 60:
-                closes = [float(k.get("close", 0)) for k in klines[-60:]]
-                data["ma60"] = sum(closes) / len(closes) if closes else None
+            closes = [float(k.get("close", 0)) for k in klines] if klines else []
 
-            # RSI calculation (simplified)
-            if len(klines) >= 15:
-                closes = [float(k.get("close", 0)) for k in klines[-15:]]
-                changes = [closes[i] - closes[i-1] for i in range(1, len(closes))]
+            # MA60
+            if len(closes) >= 60:
+                data["ma60"] = sum(closes[-60:]) / 60
+
+            # RSI calculation (14 period)
+            if len(closes) >= 15:
+                recent_closes = closes[-15:]
+                changes = [recent_closes[i] - recent_closes[i-1] for i in range(1, len(recent_closes))]
                 gains = [max(0, c) for c in changes]
                 losses = [abs(min(0, c)) for c in changes]
                 avg_gain = sum(gains) / 14 if gains else 0
@@ -200,6 +211,46 @@ class TradingApp(App[None]):
                 if avg_loss > 0:
                     rs = avg_gain / avg_loss
                     data["rsi"] = 100 - (100 / (1 + rs))
+
+            # MACD calculation (12, 26, 9)
+            if len(closes) >= 26:
+                # EMA calculation helper
+                def ema(values: list[float], period: int) -> float:
+                    if len(values) < period:
+                        return sum(values) / len(values) if values else 0
+                    multiplier = 2 / (period + 1)
+                    ema_val = sum(values[:period]) / period
+                    for val in values[period:]:
+                        ema_val = (val - ema_val) * multiplier + ema_val
+                    return ema_val
+
+                ema12 = ema(closes, 12)
+                ema26 = ema(closes, 26)
+                macd_line = ema12 - ema26
+
+                # Calculate MACD line history for signal line
+                macd_history = []
+                for i in range(26, len(closes) + 1):
+                    subset = closes[:i]
+                    e12 = ema(subset, 12)
+                    e26 = ema(subset, 26)
+                    macd_history.append(e12 - e26)
+
+                if len(macd_history) >= 9:
+                    signal_line = ema(macd_history, 9)
+                    data["macd"] = macd_line
+                    data["macd_signal"] = signal_line
+
+            # Bollinger Bands (20 period, 2 std)
+            if len(closes) >= 20:
+                period = 20
+                recent = closes[-period:]
+                sma = sum(recent) / period
+                variance = sum((x - sma) ** 2 for x in recent) / period
+                std = variance ** 0.5
+                data["bb_upper"] = sma + 2 * std
+                data["bb_lower"] = sma - 2 * std
+                data["bb_middle"] = sma
 
         # Get funding rate
         if snapshot.funding_rate:
@@ -230,7 +281,7 @@ class TradingApp(App[None]):
 
     # Public methods for external updates
     def add_signal(self, signal_type: str, details: str) -> None:
-        """Add a signal to the signals widget.
+        """Add a signal to the activity log.
 
         Args:
             signal_type: Type of signal
@@ -239,8 +290,7 @@ class TradingApp(App[None]):
         try:
             dashboard = self.get_screen("dashboard")
             if isinstance(dashboard, DashboardScreen):
-                timestamp = datetime.now().strftime("%H:%M:%S")
-                dashboard.signals_widget.add_signal(timestamp, signal_type, details)
+                dashboard.activity_widget.add_signal(signal_type, details)
         except Exception:
             pass
 
@@ -255,7 +305,7 @@ class TradingApp(App[None]):
         try:
             dashboard = self.get_screen("dashboard")
             if isinstance(dashboard, DashboardScreen):
-                dashboard.agent_widget.add_log(action, details, result)
+                dashboard.activity_widget.add_agent_action(action, details, result)
         except Exception:
             pass
 
@@ -269,7 +319,7 @@ class TradingApp(App[None]):
         try:
             dashboard = self.get_screen("dashboard")
             if isinstance(dashboard, DashboardScreen):
-                dashboard.risk_widget.add_risk_event(event_type, message)
+                dashboard.activity_widget.add_risk_event(event_type, message)
         except Exception:
             pass
 

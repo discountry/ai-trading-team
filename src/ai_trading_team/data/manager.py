@@ -13,6 +13,118 @@ from ai_trading_team.data.models import Kline, Ticker
 logger = logging.getLogger(__name__)
 
 
+class OrderBookManager:
+    """Manages local orderbook state with WebSocket diff updates.
+
+    Maintains a local copy of the orderbook by:
+    1. Getting initial snapshot via REST API
+    2. Applying incremental updates from WebSocket diff stream
+
+    Uses Decimal for price keys to ensure consistent comparison.
+    """
+
+    def __init__(self, max_levels: int = 10) -> None:
+        self._bids: dict[Decimal, Decimal] = {}  # price -> quantity
+        self._asks: dict[Decimal, Decimal] = {}  # price -> quantity
+        self._max_levels = max_levels
+        self._last_update_id: int = 0
+        self._initialized = False
+
+    def set_snapshot(self, bids: list, asks: list, last_update_id: int = 0) -> None:
+        """Set orderbook from REST snapshot.
+
+        Args:
+            bids: List of [price, quantity] pairs
+            asks: List of [price, quantity] pairs
+            last_update_id: Last update ID from snapshot
+        """
+        self._bids.clear()
+        self._asks.clear()
+
+        for bid in bids:
+            price = Decimal(str(bid[0]))
+            qty = Decimal(str(bid[1]))
+            if qty > 0:
+                self._bids[price] = qty
+
+        for ask in asks:
+            price = Decimal(str(ask[0]))
+            qty = Decimal(str(ask[1]))
+            if qty > 0:
+                self._asks[price] = qty
+
+        self._last_update_id = last_update_id
+        self._initialized = True
+
+        # Log sample to verify correct bid/ask separation
+        if self._bids and self._asks:
+            best_bid = max(self._bids.keys())
+            best_ask = min(self._asks.keys())
+            logger.info(
+                f"OrderBook snapshot: {len(self._bids)} bids, {len(self._asks)} asks, "
+                f"best_bid={best_bid}, best_ask={best_ask}, spread={best_ask - best_bid}"
+            )
+        else:
+            logger.debug(f"OrderBook snapshot set: {len(self._bids)} bids, {len(self._asks)} asks")
+
+    def apply_diff(self, bids: list, asks: list) -> None:
+        """Apply diff update from WebSocket.
+
+        Args:
+            bids: List of [price, quantity] bid updates
+            asks: List of [price, quantity] ask updates
+        """
+        if not self._initialized:
+            return
+
+        # Apply bid updates
+        for bid in bids:
+            price = Decimal(str(bid[0]))
+            qty = Decimal(str(bid[1]))
+            if qty == 0:
+                # Remove price level
+                self._bids.pop(price, None)
+            else:
+                # Update price level
+                self._bids[price] = qty
+
+        # Apply ask updates
+        for ask in asks:
+            price = Decimal(str(ask[0]))
+            qty = Decimal(str(ask[1]))
+            if qty == 0:
+                # Remove price level
+                self._asks.pop(price, None)
+            else:
+                # Update price level
+                self._asks[price] = qty
+
+    def get_orderbook(self) -> dict[str, list]:
+        """Get current orderbook state as sorted lists.
+
+        Returns:
+            Dict with 'bids' and 'asks' as sorted [price, qty] lists
+        """
+        # Sort bids descending by price (highest first), take top N
+        sorted_bids = sorted(
+            self._bids.items(),
+            key=lambda x: x[0],
+            reverse=True
+        )[:self._max_levels]
+
+        # Sort asks ascending by price (lowest first), take top N
+        sorted_asks = sorted(
+            self._asks.items(),
+            key=lambda x: x[0]
+        )[:self._max_levels]
+
+        # Convert to string format for JSON serialization
+        return {
+            "bids": [[str(p), str(q)] for p, q in sorted_bids],
+            "asks": [[str(p), str(q)] for p, q in sorted_asks]
+        }
+
+
 class BinanceDataManager:
     """Binance data manager.
 
@@ -44,6 +156,7 @@ class BinanceDataManager:
         self._symbol = ""
         self._kline_interval = "1m"
         self._data_ready = False
+        self._orderbook_manager = OrderBookManager(max_levels=10)
 
     async def start(self, symbol: str, kline_interval: str = "1m") -> None:
         """Start data collection for a symbol.
@@ -62,6 +175,7 @@ class BinanceDataManager:
         # Set up callbacks
         self._stream_client.on_ticker(self._on_ticker)
         self._stream_client.on_kline(self._on_kline)
+        self._stream_client.on_depth(self._on_depth)
 
         # Connect to WebSocket streams
         await self._stream_client.connect(symbol, kline_interval)
@@ -86,6 +200,15 @@ class BinanceDataManager:
         self._data_ready = False
 
         try:
+            # Fetch symbol info (precision, filters)
+            symbol_info = await self._rest_client.get_symbol_info(symbol)
+            if symbol_info:
+                self._data_pool.update_symbol_info(symbol_info)
+                logger.info(
+                    f"Symbol info: pricePrecision={symbol_info.get('pricePrecision')}, "
+                    f"quantityPrecision={symbol_info.get('quantityPrecision')}"
+                )
+
             # Fetch initial ticker
             ticker = await self._rest_client.get_ticker(symbol)
             self._data_pool.update_ticker(self._ticker_to_dict(ticker))
@@ -110,6 +233,9 @@ class BinanceDataManager:
                     f"Initialized {len(klines)} klines for {symbol} {self._kline_interval}"
                 )
 
+            # Fetch extended market data
+            await self._fetch_extended_data(symbol)
+
             self._data_ready = True
             logger.info(
                 f"Data initialization complete: {len(self.REQUIRED_INTERVALS)} timeframes loaded"
@@ -118,6 +244,67 @@ class BinanceDataManager:
         except Exception as e:
             logger.error(f"Failed to initialize data: {e}")
             raise
+
+    async def _fetch_extended_data(self, symbol: str) -> None:
+        """Fetch extended market data (funding rate, L/S ratio, open interest, orderbook).
+
+        Args:
+            symbol: Trading pair
+        """
+        try:
+            # Fetch initial orderbook via REST and initialize the orderbook manager
+            orderbook = await self._rest_client.get_orderbook(symbol, limit=20)
+            bids = [[str(level.price), str(level.quantity)] for level in orderbook.bids]
+            asks = [[str(level.price), str(level.quantity)] for level in orderbook.asks]
+
+            # Initialize orderbook manager with snapshot
+            self._orderbook_manager.set_snapshot(
+                bids=bids,
+                asks=asks,
+                last_update_id=orderbook.last_update_id or 0
+            )
+
+            # Update data pool with initial orderbook
+            self._data_pool.update_orderbook(self._orderbook_manager.get_orderbook())
+            logger.info(f"Initialized orderbook for {symbol}: {len(bids)} bids, {len(asks)} asks")
+        except Exception as e:
+            logger.warning(f"Failed to fetch orderbook: {e}")
+
+        try:
+            # Fetch funding rate
+            funding = await self._rest_client.get_funding_rate(symbol)
+            self._data_pool.update_funding_rate({
+                "symbol": symbol,
+                "funding_rate": float(funding.funding_rate),
+                "funding_time": funding.funding_time.isoformat() if funding.funding_time else None,
+            })
+            logger.info(f"Fetched funding rate for {symbol}: {funding.funding_rate}")
+        except Exception as e:
+            logger.warning(f"Failed to fetch funding rate: {e}")
+
+        try:
+            # Fetch open interest
+            oi = await self._rest_client.get_open_interest(symbol)
+            self._data_pool.update_open_interest({
+                "symbol": symbol,
+                "open_interest": float(oi.open_interest),
+            })
+            logger.info(f"Fetched open interest for {symbol}: {oi.open_interest}")
+        except Exception as e:
+            logger.warning(f"Failed to fetch open interest: {e}")
+
+        try:
+            # Fetch long/short ratio
+            ls = await self._rest_client.get_long_short_ratio(symbol)
+            self._data_pool.update_long_short_ratio({
+                "symbol": symbol,
+                "long_ratio": float(ls.long_ratio),
+                "short_ratio": float(ls.short_ratio),
+                "long_short_ratio": float(ls.long_short_ratio),
+            })
+            logger.info(f"Fetched L/S ratio for {symbol}: {ls.long_short_ratio}")
+        except Exception as e:
+            logger.warning(f"Failed to fetch L/S ratio: {e}")
 
     def _on_ticker(self, ticker: Ticker) -> None:
         """Handle ticker update from WebSocket."""
@@ -141,6 +328,17 @@ class BinanceDataManager:
                 existing = existing[-500:]
 
         self._data_pool.update_klines(interval, existing)
+
+    def _on_depth(self, bids: list, asks: list) -> None:
+        """Handle depth (orderbook) diff update from WebSocket.
+
+        Applies incremental updates to the local orderbook state.
+        """
+        # Apply diff to orderbook manager
+        self._orderbook_manager.apply_diff(bids, asks)
+
+        # Update data pool with current orderbook state
+        self._data_pool.update_orderbook(self._orderbook_manager.get_orderbook())
 
     @staticmethod
     def _ticker_to_dict(ticker: Ticker) -> dict[str, Any]:
