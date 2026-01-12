@@ -11,6 +11,7 @@ uv sync
 # Copy environment configuration
 cp env.example .env
 # Edit .env with your API keys
+# Set TRADING_EXCHANGE=weex or binance for live execution
 
 # Run the application
 uv run python main.py

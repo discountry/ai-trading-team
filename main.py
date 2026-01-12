@@ -4,7 +4,7 @@ This trading bot:
 1. Fetches market data from Binance (configured via TRADING_SYMBOL)
 2. Uses EVENT-DRIVEN signals (only on state changes, not periodic evaluation)
 3. Uses LangChain agent to make trading decisions when signals trigger
-4. Executes trades on WEEX (or MockExecutor in DRY_RUN mode)
+4. Executes trades on the configured exchange (WEEX/Binance, or MockExecutor in DRY_RUN)
 5. Implements comprehensive risk control (25% force stop, 10% profit signals)
 
 Signal System:
@@ -32,6 +32,7 @@ from ai_trading_team.core.data_pool import DataPool
 from ai_trading_team.core.session import SessionManager
 from ai_trading_team.core.types import OrderType, Side
 from ai_trading_team.data.manager import BinanceDataManager
+from ai_trading_team.execution.binance.executor import BinanceExecutor
 from ai_trading_team.execution.mock_executor import MockExecutor
 from ai_trading_team.execution.weex.executor import WEEXExecutor
 from ai_trading_team.logging import setup_logging
@@ -63,20 +64,30 @@ except ImportError:
     pass
 
 
-def get_symbol_pair(symbol: str) -> tuple[str, str]:
+def normalize_exchange(exchange: str) -> str:
+    """Normalize exchange name and validate."""
+    normalized = exchange.strip().lower()
+    if normalized not in {"weex", "binance"}:
+        raise ValueError(f"Unsupported exchange: {exchange}")
+    return normalized
+
+
+def get_symbol_mapping(symbol: str) -> dict[str, str]:
     """Convert trading symbol to exchange-specific formats.
 
     Args:
         symbol: Base symbol (e.g., "DOGEUSDT", "BTCUSDT")
 
     Returns:
-        Tuple of (binance_symbol, weex_symbol)
+        Mapping of exchange -> symbol
         - Binance: uppercase (e.g., "DOGEUSDT")
         - WEEX: cmt_ prefix + lowercase (e.g., "cmt_dogeusdt")
     """
     binance_symbol = symbol.upper()
-    weex_symbol = f"cmt_{symbol.lower()}"
-    return binance_symbol, weex_symbol
+    return {
+        "binance": binance_symbol,
+        "weex": f"cmt_{symbol.lower()}",
+    }
 
 
 class TradingBot:
@@ -95,15 +106,17 @@ class TradingBot:
         # TUI reference for sending updates (set externally)
         self._tui_app: Any = None
 
-        # Convert trading symbol to exchange-specific formats
-        self._binance_symbol, self._weex_symbol = get_symbol_pair(config.trading.symbol)
+        self._exchange = normalize_exchange(config.trading.exchange)
+        symbol_map = get_symbol_mapping(config.trading.symbol)
+        self._binance_symbol = symbol_map["binance"]
+        self._execution_symbol = symbol_map[self._exchange]
 
         # Core components
         self._data_pool = DataPool()
 
         # Session manager for state persistence
         self._session_manager = SessionManager(
-            symbol=self._weex_symbol,
+            symbol=self._execution_symbol,
             session_dir="sessions",
             auto_save_interval=30,
         )
@@ -118,22 +131,22 @@ class TradingBot:
         # Event-driven signal aggregator (replaces old orchestrator)
         self._signal_aggregator = SignalAggregator(
             data_pool=self._data_pool,
-            symbol=self._weex_symbol,
+            symbol=self._execution_symbol,
         )
 
         # State machine for trading lifecycle
         self._state_machine = StrategyStateMachine(
-            symbol=self._weex_symbol,
+            symbol=self._execution_symbol,
             cooldown_seconds=60,
             force_stop_loss_percent=Decimal("25"),
             profit_signal_threshold=Decimal("10"),
         )
 
         # Agent for trading decisions
-        self._agent = LangChainTradingAgent(config, self._weex_symbol)
+        self._agent = LangChainTradingAgent(config, self._execution_symbol)
 
         # Execution - use MockExecutor in DRY_RUN mode
-        self._executor: MockExecutor | WEEXExecutor
+        self._executor: MockExecutor | WEEXExecutor | BinanceExecutor
         if config.trading.dry_run:
             self._executor = MockExecutor(
                 data_pool=self._data_pool,
@@ -141,11 +154,17 @@ class TradingBot:
                 leverage=config.trading.leverage,
             )
         else:
-            self._executor = WEEXExecutor(
-                config.api.weex_api_key,
-                config.api.weex_api_secret,
-                config.api.weex_passphrase,
-            )
+            if self._exchange == "weex":
+                self._executor = WEEXExecutor(
+                    config.api.weex_api_key,
+                    config.api.weex_api_secret,
+                    config.api.weex_passphrase,
+                )
+            else:
+                self._executor = BinanceExecutor(
+                    config.api.binance_api_key,
+                    config.api.binance_api_secret,
+                )
 
         # Risk monitor with strategy-specific rules
         self._risk_monitor = RiskMonitor(self._data_pool, self._executor)
@@ -254,7 +273,8 @@ class TradingBot:
         self._logger.info("AI Trading Team - Event-Driven Signal System")
         self._logger.info("=" * 60)
         self._logger.info(f"Binance Symbol: {self._binance_symbol}")
-        self._logger.info(f"WEEX Symbol: {self._weex_symbol}")
+        self._logger.info(f"Trade Exchange: {self._exchange}")
+        self._logger.info(f"Trade Symbol: {self._execution_symbol}")
         self._logger.info(f"Leverage: {self._config.trading.leverage}x")
         self._logger.info("Signal System: Event-driven (state changes only)")
         self._logger.info("Signals: MA Crossover, RSI Extremes, Funding Rate, L/S Ratio")
@@ -262,7 +282,7 @@ class TradingBot:
         if self._config.trading.dry_run:
             self._logger.info("Mode: DRY_RUN (simulated trading, $1000 initial balance)")
         else:
-            self._logger.info("Mode: LIVE (real trading on WEEX)")
+            self._logger.info(f"Mode: LIVE (real trading on {self._exchange.upper()})")
 
         self._logger.info("=" * 60)
 
@@ -274,10 +294,12 @@ class TradingBot:
             if self._config.trading.dry_run:
                 self._logger.info("Mock executor connected")
             else:
-                self._logger.info("Connected to WEEX")
+                self._logger.info(f"Connected to {self._executor.name}")
 
             # Set leverage
-            await self._executor.set_leverage(self._weex_symbol, self._config.trading.leverage)
+            await self._executor.set_leverage(
+                self._execution_symbol, self._config.trading.leverage
+            )
             self._logger.info(f"Leverage set to {self._config.trading.leverage}x")
 
             # Initialize trading statistics with initial balance
@@ -291,7 +313,7 @@ class TradingBot:
                 self._logger.error(f"Failed to initialize mock executor: {e}")
                 return
             else:
-                self._logger.error(f"Failed to connect to WEEX: {e}")
+                self._logger.error(f"Failed to connect to {self._exchange}: {e}")
                 return
 
         # Attempt state recovery
@@ -339,7 +361,7 @@ class TradingBot:
 
         # Fetch actual position from exchange
         try:
-            actual_position = await self._executor.get_position(self._weex_symbol)
+            actual_position = await self._executor.get_position(self._execution_symbol)
         except Exception as e:
             self._logger.error(f"Failed to fetch position for recovery: {e}")
             actual_position = None
@@ -354,7 +376,7 @@ class TradingBot:
 
             # Restore state machine to IN_POSITION
             pos_ctx = PositionContext(
-                symbol=self._weex_symbol,
+                symbol=self._execution_symbol,
                 side=actual_position.side,
                 entry_price=actual_position.entry_price,
                 size=actual_position.size,
@@ -387,7 +409,7 @@ class TradingBot:
             )
 
             pos_ctx = PositionContext(
-                symbol=self._weex_symbol,
+                symbol=self._execution_symbol,
                 side=actual_position.side,
                 entry_price=actual_position.entry_price,
                 size=actual_position.size,
@@ -453,7 +475,7 @@ class TradingBot:
             pos = self._state_machine._context.position
             if pos.side:
                 self._session_manager.update_position(
-                    symbol=self._weex_symbol,
+                    symbol=self._execution_symbol,
                     side=pos.side,
                     size=pos.size,
                     entry_price=pos.entry_price,
@@ -664,7 +686,7 @@ class TradingBot:
     async def _update_position_data(self) -> None:
         """Update position data in data pool."""
         try:
-            position = await self._executor.get_position(self._weex_symbol)
+            position = await self._executor.get_position(self._execution_symbol)
             if position:
                 self._data_pool.update_position(
                     {
@@ -709,7 +731,7 @@ class TradingBot:
 
         # Get current snapshot and position
         snapshot = self._data_pool.get_snapshot()
-        position = await self._executor.get_position(self._weex_symbol)
+        position = await self._executor.get_position(self._execution_symbol)
 
         if not position:
             self._logger.warning("No position found for profit signal")
@@ -779,17 +801,16 @@ class TradingBot:
 
         try:
             # Cancel existing stop loss orders first
-            orders = await self._executor.get_open_orders(self._weex_symbol)
+            orders = await self._executor.get_open_orders(self._execution_symbol)
             cancelled_count = 0
             for order in orders:
                 if order.order_type.value in ("stop", "stop_market", "stop_loss"):
-                    await self._executor.cancel_order(self._weex_symbol, order.order_id)
+                    await self._executor.cancel_order(self._execution_symbol, order.order_id)
                     self._logger.info(f"Cancelled old stop loss order: {order.order_id}")
                     cancelled_count += 1
 
-            # Note: WEEX's preset_stop_loss only works at open time.
-            # To modify stop loss on an existing position, we need to use the
-            # exchange's plan order API (trigger orders).
+            # Note: Modifying stop loss on existing positions can require
+            # exchange-specific conditional order APIs.
             # For now, we log the intended stop loss and update the state context
             # for the AI to be aware of the intended stop level.
             self._logger.warning(
@@ -848,7 +869,7 @@ class TradingBot:
                     self._logger.critical(f"FORCE CLOSING POSITION: {action.reason}")
                     self._notify_risk_event("STOP_LOSS", f"Force close: {action.reason}")
 
-                    position = await self._executor.get_position(self._weex_symbol)
+                    position = await self._executor.get_position(self._execution_symbol)
                     if position:
                         # Capture position info before closing for trade recording
                         entry_price = float(position.entry_price)
@@ -858,7 +879,7 @@ class TradingBot:
                         trade_size = float(position.size)
 
                         order = await self._executor.close_position(
-                            symbol=self._weex_symbol,
+                            symbol=self._execution_symbol,
                             side=position.side,
                             size=None,
                         )
@@ -934,7 +955,7 @@ class TradingBot:
             signal: Signal to process
         """
         # Get current position
-        position = await self._executor.get_position(self._weex_symbol)
+        position = await self._executor.get_position(self._execution_symbol)
         if not position:
             self._logger.debug("No position found, skipping position signal")
             return
@@ -1080,7 +1101,7 @@ class TradingBot:
             trade_size = float(position.size)
 
             order = await self._executor.close_position(
-                symbol=self._weex_symbol,
+                symbol=self._execution_symbol,
                 side=position.side,
                 size=None,  # Close full position
             )
@@ -1156,7 +1177,7 @@ class TradingBot:
             partial_pnl = total_unrealized_pnl * reduce_ratio
 
             order = await self._executor.reduce_position(
-                symbol=self._weex_symbol,
+                symbol=self._execution_symbol,
                 side=position.side,
                 size=reduce_size,
             )
@@ -1217,7 +1238,7 @@ class TradingBot:
                 return
 
             order = await self._executor.add_to_position(
-                symbol=self._weex_symbol,
+                symbol=self._execution_symbol,
                 side=position.side,
                 size=add_size,
             )
@@ -1329,10 +1350,10 @@ class TradingBot:
             if decision.command.is_actionable():
                 success = await self._execute_command(decision)
                 if success:
-                    position = await self._executor.get_position(self._weex_symbol)
+                    position = await self._executor.get_position(self._execution_symbol)
                     if position:
                         pos_ctx = PositionContext(
-                            symbol=self._weex_symbol,
+                            symbol=self._execution_symbol,
                             side=position.side,
                             margin=position.margin,
                         )
@@ -1453,7 +1474,7 @@ class TradingBot:
                     )
 
                     order = await self._executor.place_order(
-                        symbol=self._weex_symbol,
+                        symbol=self._execution_symbol,
                         side=command.side,
                         order_type=command.order_type or OrderType.MARKET,
                         size=command.size,
@@ -1479,14 +1500,14 @@ class TradingBot:
 
             elif command.action == AgentAction.CLOSE and command.side:
                 # Get position info before closing for trade recording
-                position = await self._executor.get_position(self._weex_symbol)
+                position = await self._executor.get_position(self._execution_symbol)
                 entry_price = float(position.entry_price) if position else 0.0
                 exit_price = self._get_current_price()
                 realized_pnl = float(position.unrealized_pnl) if position else 0.0
                 trade_size = float(position.size) if position else command.size or 0.0
 
                 close_order = await self._executor.close_position(
-                    symbol=self._weex_symbol,
+                    symbol=self._execution_symbol,
                     side=command.side,
                     size=command.size,
                 )
