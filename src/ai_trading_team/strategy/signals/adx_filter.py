@@ -192,10 +192,7 @@ class ADXFilter:
         dx_series = []
         for i in range(len(plus_di_series)):
             di_sum = plus_di_series[i] + minus_di_series[i]
-            if di_sum > 0:
-                dx = 100 * abs(plus_di_series[i] - minus_di_series[i]) / di_sum
-            else:
-                dx = 0
+            dx = 100 * abs(plus_di_series[i] - minus_di_series[i]) / di_sum if di_sum > 0 else 0
             dx_series.append(dx)
 
         # Smooth DX to get ADX

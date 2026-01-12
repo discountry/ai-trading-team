@@ -353,16 +353,15 @@ class SignalAggregator:
                 signal = source.update(snapshot, tf)
                 if signal:
                     # Apply ADX filter to entry signals only
-                    if signal.signal_type in self.ENTRY_SIGNAL_TYPES:
-                        if not adx_allows_entry:
-                            # Log but don't emit the signal
-                            adx_info = self._adx_filter.get_cached_adx(tf)
-                            adx_val = adx_info.adx if adx_info else "N/A"
-                            logger.info(
-                                f"ADX filter blocked entry signal: {signal.signal_type.value} "
-                                f"on {tf.value} (ADX={adx_val}, threshold={self._adx_filter.threshold})"
-                            )
-                            continue
+                    if signal.signal_type in self.ENTRY_SIGNAL_TYPES and not adx_allows_entry:
+                        # Log but don't emit the signal
+                        adx_info = self._adx_filter.get_cached_adx(tf)
+                        adx_val = adx_info.adx if adx_info else "N/A"
+                        logger.info(
+                            f"ADX filter blocked entry signal: {signal.signal_type.value} "
+                            f"on {tf.value} (ADX={adx_val}, threshold={self._adx_filter.threshold})"
+                        )
+                        continue
 
                     signals.append(signal)
                     self._recent_signals.append(signal)

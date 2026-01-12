@@ -312,9 +312,7 @@ class LangChainTradingAgent:
         # Format indicators
         indicators_str = "N/A"
         if snapshot.indicators:
-            indicators_str = "\n".join(
-                f"{k}: {v}" for k, v in snapshot.indicators.items()
-            )
+            indicators_str = self._format_indicators(snapshot.indicators)
 
         # Format funding rate
         funding_str = "N/A"
@@ -415,6 +413,37 @@ class LangChainTradingAgent:
             "recent_operations": ops_str,
         }
 
+    def _format_indicators(self, indicators: dict[str, Any]) -> str:
+        """Format indicators dict for AI context.
+
+        Handles both simple values and nested dict values,
+        producing human-readable output.
+
+        Args:
+            indicators: Raw indicators dict from snapshot
+
+        Returns:
+            Formatted string for prompt context
+        """
+        lines = []
+
+        for key, value in indicators.items():
+            if isinstance(value, dict):
+                # Format structured indicator data
+                parts = []
+                for k, v in value.items():
+                    if isinstance(v, float):
+                        parts.append(f"{k}={v:.2f}")
+                    else:
+                        parts.append(f"{k}={v}")
+                lines.append(f"{key}: {', '.join(parts)}")
+            elif isinstance(value, float):
+                lines.append(f"{key}: {value:.2f}")
+            else:
+                lines.append(f"{key}: {value}")
+
+        return "\n".join(lines) if lines else "N/A"
+
     def _snapshot_to_dict(self, snapshot: DataSnapshot) -> dict[str, Any]:
         """Convert snapshot to serializable dict."""
         return {
@@ -467,9 +496,7 @@ class LangChainTradingAgent:
         # Format indicators
         indicators_str = "N/A"
         if snapshot.indicators:
-            indicators_str = "\n".join(
-                f"{k}: {v}" for k, v in snapshot.indicators.items()
-            )
+            indicators_str = self._format_indicators(snapshot.indicators)
 
         # Build context for profit signal prompt
         context = {

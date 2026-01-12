@@ -371,6 +371,67 @@ class MockExecutor:
         logger.info(f"[MOCK] Position closed with P&L: {pnl:+.2f}")
         return order
 
+    async def reduce_position(
+        self, symbol: str, side: Side, size: float
+    ) -> Order | None:
+        """Partially close a position.
+
+        Args:
+            symbol: Trading pair
+            side: Position side to reduce
+            size: Size to close (must be positive)
+
+        Returns:
+            Order object if successful
+        """
+        if size <= 0:
+            logger.error(f"[MOCK] Invalid reduce size: {size}")
+            return None
+
+        if not self._position or self._position.symbol != symbol:
+            logger.warning(f"[MOCK] No position to reduce for {symbol}")
+            return None
+
+        logger.info(f"[MOCK] Reducing position by {size}")
+        return await self.close_position(symbol, side, size)
+
+    async def add_to_position(
+        self,
+        symbol: str,
+        side: Side,
+        size: float,
+        stop_loss_price: float | None = None,
+    ) -> Order | None:
+        """Add to an existing position.
+
+        Args:
+            symbol: Trading pair
+            side: Position side to add to
+            size: Size to add
+            stop_loss_price: Optional stop loss price
+
+        Returns:
+            Order object if successful
+        """
+        if size <= 0:
+            logger.error(f"[MOCK] Invalid add size: {size}")
+            return None
+
+        try:
+            order = await self.place_order(
+                symbol=symbol,
+                side=side,
+                order_type=OrderType.MARKET,
+                size=size,
+                action="open",
+                stop_loss_price=stop_loss_price,
+            )
+            logger.info(f"[MOCK] Added {size} to position: {order.order_id}")
+            return order
+        except Exception as e:
+            logger.error(f"[MOCK] Failed to add to position: {e}")
+            return None
+
     async def set_leverage(self, symbol: str, leverage: int) -> bool:
         """Set leverage (just store it)."""
         _ = symbol  # Symbol-specific leverage not implemented in mock
