@@ -1341,15 +1341,23 @@ class TradingBot:
                             StateTransition.AGENT_OPEN,
                             {"position": pos_ctx},
                         )
+                    else:
+                        # Position not found after successful order - treat as failed
+                        self._state_machine.transition(StateTransition.ORDER_FAILED)
                 else:
                     self._state_machine.transition(StateTransition.ORDER_FAILED)
             else:
                 self._state_machine.transition(StateTransition.AGENT_OBSERVE)
         elif decision.command.action == AgentAction.CLOSE:
-            success = await self._execute_command(decision)
-            if success:
-                self._state_machine.transition(StateTransition.POSITION_CLOSED)
-                self._risk_monitor.reset_rules()
+            # CLOSE in ANALYZING state means agent wants to skip - treat as OBSERVE
+            self._state_machine.transition(StateTransition.AGENT_OBSERVE)
+            self._notify_agent_log("CLOSE", "No position to close", "Treating as observe")
+        else:
+            # Any other action (REDUCE, CANCEL, MOVE_STOP_LOSS) - treat as OBSERVE
+            self._logger.debug(
+                f"Unexpected action in entry signal: {decision.command.action.value}, treating as observe"
+            )
+            self._state_machine.transition(StateTransition.AGENT_OBSERVE)
 
         # Upload AI log
         try:

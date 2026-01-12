@@ -145,6 +145,9 @@ class StrategyStateMachine:
             ],
             StrategyState.ANALYZING: [
                 (StateTransition.CONTEXT_READY, StrategyState.WAITING_ENTRY),
+                (StateTransition.AGENT_OPEN, StrategyState.IN_POSITION),
+                (StateTransition.AGENT_OBSERVE, StrategyState.IDLE),
+                (StateTransition.ORDER_FAILED, StrategyState.IDLE),
                 (StateTransition.TIMEOUT, StrategyState.IDLE),
             ],
             StrategyState.WAITING_ENTRY: [
