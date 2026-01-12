@@ -1267,7 +1267,6 @@ class TradingBot:
         self._notify_signal(signal.signal_type.value, signal.description)
 
         self._logger.info("Calling AI agent for trading decision...")
-        self._notify_agent_log("SIGNAL", signal.signal_type.value, signal.description)
 
         # Transition to analyzing state
         self._state_machine.transition(
