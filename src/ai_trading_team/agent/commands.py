@@ -49,6 +49,9 @@ class AgentCommand:
             if self.size is None or self.size <= 0:
                 errors.append("positive size is required for open/add actions")
 
+        if self.action == AgentAction.REDUCE and (self.size is None or self.size <= 0):
+            errors.append("positive size is required for reduce action")
+
         if self.action == AgentAction.CLOSE and self.side is None:
             errors.append("side is required for close action")
 

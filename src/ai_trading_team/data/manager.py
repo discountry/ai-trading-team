@@ -30,13 +30,16 @@ class OrderBookManager:
         self._last_update_id: int = 0
         self._initialized = False
 
-    def set_snapshot(self, bids: list, asks: list, last_update_id: int = 0) -> None:
-        """Set orderbook from REST snapshot.
+    def set_snapshot(
+        self, bids: list, asks: list, last_update_id: int = 0, *, log_info: bool = True
+    ) -> None:
+        """Set orderbook from REST snapshot or partial depth stream.
 
         Args:
             bids: List of [price, quantity] pairs
             asks: List of [price, quantity] pairs
             last_update_id: Last update ID from snapshot
+            log_info: Whether to log info (set False for frequent WebSocket updates)
         """
         self._bids.clear()
         self._asks.clear()
@@ -56,15 +59,15 @@ class OrderBookManager:
         self._last_update_id = last_update_id
         self._initialized = True
 
-        # Log sample to verify correct bid/ask separation
-        if self._bids and self._asks:
+        # Log sample to verify correct bid/ask separation (only on initial snapshot)
+        if log_info and self._bids and self._asks:
             best_bid = max(self._bids.keys())
             best_ask = min(self._asks.keys())
             logger.info(
                 f"OrderBook snapshot: {len(self._bids)} bids, {len(self._asks)} asks, "
                 f"best_bid={best_bid}, best_ask={best_ask}, spread={best_ask - best_bid}"
             )
-        else:
+        elif log_info:
             logger.debug(f"OrderBook snapshot set: {len(self._bids)} bids, {len(self._asks)} asks")
 
     def apply_diff(self, bids: list, asks: list) -> None:
@@ -330,12 +333,15 @@ class BinanceDataManager:
         self._data_pool.update_klines(interval, existing)
 
     def _on_depth(self, bids: list, asks: list) -> None:
-        """Handle depth (orderbook) diff update from WebSocket.
+        """Handle depth (orderbook) update from WebSocket.
 
-        Applies incremental updates to the local orderbook state.
+        With partial_book_depth_streams, we receive complete orderbook snapshots,
+        not diffs. So we can directly update the data pool without the OrderBookManager.
         """
-        # Apply diff to orderbook manager
-        self._orderbook_manager.apply_diff(bids, asks)
+        # For partial depth streams, we receive full orderbook snapshots
+        # Use OrderBookManager.set_snapshot() to replace the entire orderbook
+        # log_info=False to avoid flooding logs with every WebSocket update
+        self._orderbook_manager.set_snapshot(bids, asks, log_info=False)
 
         # Update data pool with current orderbook state
         self._data_pool.update_orderbook(self._orderbook_manager.get_orderbook())

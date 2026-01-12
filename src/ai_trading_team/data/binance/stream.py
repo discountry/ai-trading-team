@@ -140,12 +140,16 @@ class BinanceStreamClient:
             kline_stream.on("message", self._handle_kline)
             logger.info(f"Subscribed to kline stream: {symbol_lower}@{kline_interval}")
 
-            # Subscribe to depth stream for orderbook updates
-            depth_stream = await self._connection.diff_book_depth_streams(
+            # Subscribe to partial depth stream for orderbook updates
+            # Using partial_book_depth_streams instead of diff_book_depth_streams
+            # because partial streams send complete top N levels every update,
+            # avoiding the need for complex diff synchronization
+            depth_stream = await self._connection.partial_book_depth_streams(
                 symbol=symbol_lower,
+                levels=10,  # Top 10 price levels on each side
             )
-            depth_stream.on("message", self._handle_depth)
-            logger.info(f"Subscribed to depth stream: {symbol_lower}@depth")
+            depth_stream.on("message", self._handle_partial_depth)
+            logger.info(f"Subscribed to partial depth stream: {symbol_lower}@depth10")
 
         except Exception as e:
             self._connected = False
@@ -206,7 +210,11 @@ class BinanceStreamClient:
             logger.error(f"Error handling kline: {e}")
 
     def _handle_depth(self, message: Any) -> None:
-        """Handle incoming depth (orderbook) data."""
+        """Handle incoming depth (orderbook) diff data.
+
+        NOTE: This is for diff_book_depth_streams (currently unused).
+        We now use _handle_partial_depth for partial_book_depth_streams.
+        """
         try:
             # Convert Pydantic model to dict first (like ticker/kline handlers)
             data = message.to_dict() if hasattr(message, "to_dict") else message
@@ -235,6 +243,61 @@ class BinanceStreamClient:
 
         except Exception as e:
             logger.error(f"Error handling depth: {e}")
+
+    def _handle_partial_depth(self, message: Any) -> None:
+        """Handle incoming partial depth (orderbook) data.
+
+        Partial depth stream sends complete top N levels, not diffs.
+        This simplifies orderbook management since we don't need to track state.
+        """
+        try:
+            # Convert Pydantic model to dict first
+            data = message.to_dict() if hasattr(message, "to_dict") else message
+
+            bids = []
+            asks = []
+
+            # Parse bids from 'b' or 'bids' key
+            bids_data = data.get("b") or data.get("bids", [])
+            for item in bids_data:
+                # Handle different formats
+                if hasattr(item, "root"):
+                    # Pydantic model with root attribute
+                    price, qty = item.root
+                    bids.append([str(price), str(qty)])
+                elif isinstance(item, list | tuple) and len(item) >= 2:
+                    bids.append([str(item[0]), str(item[1])])
+
+            # Parse asks from 'a' or 'asks' key
+            asks_data = data.get("a") or data.get("asks", [])
+            for item in asks_data:
+                if hasattr(item, "root"):
+                    price, qty = item.root
+                    asks.append([str(price), str(qty)])
+                elif isinstance(item, list | tuple) and len(item) >= 2:
+                    asks.append([str(item[0]), str(item[1])])
+
+            # Validate orderbook integrity
+            if bids and asks:
+                best_bid = float(bids[0][0]) if bids else 0
+                best_ask = float(asks[0][0]) if asks else 0
+                if best_bid > 0 and best_ask > 0 and best_bid >= best_ask:
+                    logger.warning(
+                        f"Invalid orderbook: best_bid({best_bid}) >= best_ask({best_ask}), skipping"
+                    )
+                    return
+
+                logger.debug(
+                    f"Partial depth: {len(bids)} bids, {len(asks)} asks, "
+                    f"best_bid={bids[0][0]}, best_ask={asks[0][0]}"
+                )
+
+            # Notify callbacks with full orderbook data
+            for callback in self._callbacks["depth"]:
+                callback(bids, asks)
+
+        except Exception as e:
+            logger.error(f"Error handling partial depth: {e}")
 
     @property
     def is_connected(self) -> bool:

@@ -544,3 +544,102 @@ class SignalAggregator:
         self._is_ready = False
         self._last_confluence_time = None
         logger.info("Signal aggregator reset")
+
+    def update_indicators(self) -> None:
+        """Update data pool with computed indicator values.
+
+        This method computes indicators from signal sources and stores them
+        in the data pool for the AI context.
+        """
+        snapshot = self._data_pool.get_snapshot()
+
+        if not self._check_data_ready(snapshot):
+            return
+
+        # Update ADX for each timeframe
+        for tf in Timeframe:
+            adx_info = self._adx_filter.get_trend_info(snapshot, tf)
+            if adx_info.get("adx") is not None:
+                self._data_pool.update_indicator(
+                    f"ADX_{tf.value}",
+                    adx_info,
+                )
+
+        # Compute RSI, MA, MACD, BB for primary timeframe (H1)
+        h1_klines = snapshot.klines.get("1h", []) if snapshot.klines else []
+        if len(h1_klines) >= 60:
+            closes = [float(k.get("close", 0)) for k in h1_klines]
+
+            # RSI(14)
+            rsi = self._calculate_rsi(closes, 14)
+            if rsi is not None:
+                self._data_pool.update_indicator("RSI_14", round(rsi, 2))
+
+            # SMA(60)
+            if len(closes) >= 60:
+                sma_60 = sum(closes[-60:]) / 60
+                current_price = closes[-1]
+                position = "above" if current_price > sma_60 else "below"
+                distance_percent = ((current_price - sma_60) / sma_60) * 100
+                self._data_pool.update_indicator(
+                    "SMA_60",
+                    {
+                        "value": round(sma_60, 6),
+                        "price_position": position,
+                        "distance_percent": round(distance_percent, 2),
+                    },
+                )
+
+            # Bollinger Bands(20, 2)
+            if len(closes) >= 20:
+                bb = self._calculate_bollinger_bands(closes, 20, 2.0)
+                if bb:
+                    upper, middle, lower = bb
+                    current_price = closes[-1]
+                    self._data_pool.update_indicator(
+                        "BB_20",
+                        {
+                            "upper": round(upper, 6),
+                            "middle": round(middle, 6),
+                            "lower": round(lower, 6),
+                            "width_percent": round((upper - lower) / middle * 100, 2),
+                            "position": round((current_price - lower) / (upper - lower), 2)
+                            if upper != lower
+                            else 0.5,
+                        },
+                    )
+
+    def _calculate_rsi(self, closes: list[float], period: int) -> float | None:
+        """Calculate RSI from close prices."""
+        if len(closes) < period + 1:
+            return None
+
+        changes = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
+        gains = [max(0, c) for c in changes]
+        losses = [abs(min(0, c)) for c in changes]
+
+        avg_gain = sum(gains[-period:]) / period
+        avg_loss = sum(losses[-period:]) / period
+
+        if avg_loss == 0:
+            return 100.0
+
+        rs = avg_gain / avg_loss
+        return 100 - (100 / (1 + rs))
+
+    def _calculate_bollinger_bands(
+        self, closes: list[float], period: int, std_dev: float
+    ) -> tuple[float, float, float] | None:
+        """Calculate Bollinger Bands."""
+        if len(closes) < period:
+            return None
+
+        period_closes = closes[-period:]
+        middle = sum(period_closes) / len(period_closes)
+        variance = sum((c - middle) ** 2 for c in period_closes) / len(period_closes)
+        std = variance**0.5
+
+        upper = middle + (std_dev * std)
+        lower = middle - (std_dev * std)
+
+        return upper, middle, lower

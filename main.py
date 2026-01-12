@@ -41,6 +41,7 @@ from ai_trading_team.strategy.signals import (
     Signal,
     SignalAggregator,
     SignalDirection,
+    SignalStrength,
     Timeframe,
 )
 from ai_trading_team.strategy.state_machine import (
@@ -574,6 +575,9 @@ class TradingBot:
                         if signals:
                             self._pending_signals.extend(signals)
 
+                        # Update indicators in data pool for AI context
+                        self._signal_aggregator.update_indicators()
+
             except Exception as e:
                 self._logger.error(f"Error in signal update loop: {e}")
 
@@ -677,6 +681,136 @@ class TradingBot:
         except Exception as e:
             self._logger.debug(f"Error updating position data: {e}")
 
+    async def _handle_profit_signal(self, action: Any) -> None:
+        """Handle profit threshold signal by asking AI to set stop loss.
+
+        Args:
+            action: RiskAction with move_stop_loss type
+        """
+        self._logger.info(f"Processing profit threshold signal: {action.reason}")
+        self._notify_agent_log("PROFIT", action.reason[:50], "Asking AI for stop loss")
+
+        # Get current snapshot and position
+        snapshot = self._data_pool.get_snapshot()
+        position = await self._executor.get_position(self._weex_symbol)
+
+        if not position:
+            self._logger.warning("No position found for profit signal")
+            return
+
+        # Build profit data for AI
+        profit_data = {
+            "current_pnl_percent": action.data.get("current_pnl_percent", 0),
+            "threshold_level": action.data.get("threshold_level", 10),
+            "highest_pnl_percent": float(self._state_machine._context.position.highest_pnl_percent),
+            "entry_price": float(position.entry_price),
+            "position_side": position.side.value,
+            "current_margin": float(position.margin),
+        }
+
+        # Ask AI agent to decide stop loss price
+        try:
+            decision = await self._agent.process_profit_signal(snapshot, profit_data)
+            self._logger.info(
+                f"AI profit decision: action={decision.command.action.value}, "
+                f"stop_loss={decision.command.stop_loss_price}"
+            )
+
+            # Execute move_stop_loss if AI decided
+            if decision.command.action == AgentAction.MOVE_STOP_LOSS:
+                if decision.command.stop_loss_price:
+                    await self._execute_move_stop_loss(
+                        position, decision.command.stop_loss_price
+                    )
+                else:
+                    self._logger.warning("AI returned move_stop_loss without price")
+
+            elif decision.command.action == AgentAction.CLOSE:
+                # AI decided to close instead of moving stop loss
+                success = await self._execute_command(decision)
+                if success:
+                    self._state_machine.transition(StateTransition.POSITION_CLOSED)
+                    self._risk_monitor.reset_rules()
+
+            elif decision.command.action == AgentAction.OBSERVE:
+                self._logger.info("AI decided to observe, not moving stop loss")
+
+            # Upload AI log
+            try:
+                await self._executor.upload_ai_log(
+                    stage="Profit Signal",
+                    model=decision.model,
+                    input_data=profit_data,
+                    output={
+                        "action": decision.command.action.value,
+                        "stop_loss_price": decision.command.stop_loss_price,
+                    },
+                    explanation=decision.command.reason,
+                )
+            except Exception as e:
+                self._logger.warning(f"Failed to upload AI log: {e}")
+
+        except Exception as e:
+            self._logger.error(f"Error processing profit signal: {e}")
+
+    async def _execute_move_stop_loss(
+        self, position: Any, stop_loss_price: float
+    ) -> None:
+        """Execute stop loss order movement.
+
+        Args:
+            position: Current position
+            stop_loss_price: New stop loss price
+        """
+        self._logger.info(f"Moving stop loss to {stop_loss_price:.4f}")
+
+        try:
+            # Cancel existing stop loss orders first
+            orders = await self._executor.get_open_orders(self._weex_symbol)
+            for order in orders:
+                if order.order_type.value in ("stop", "stop_market", "stop_loss"):
+                    await self._executor.cancel_order(self._weex_symbol, order.order_id)
+                    self._logger.info(f"Cancelled old stop loss order: {order.order_id}")
+
+            # Place new stop loss order
+            # For LONG position: stop loss is a SELL order triggered below price
+            # For SHORT position: stop loss is a BUY order triggered above price
+            stop_side = Side.SHORT if position.side == Side.LONG else Side.LONG
+
+            # Use preset stop loss if available, otherwise place stop order
+            # Note: Some exchanges support modifying stop loss directly
+            order = await self._executor.place_order(
+                symbol=self._weex_symbol,
+                side=stop_side,
+                order_type=OrderType.MARKET,
+                size=float(position.size),
+                action="close",
+                stop_loss_price=stop_loss_price,
+            )
+
+            self._logger.info(f"New stop loss order placed: {order.order_id}")
+            self._notify_agent_log(
+                "STOP_LOSS", f"Moved to {stop_loss_price:.4f}", "Success"
+            )
+
+            self._data_pool.add_operation({
+                "timestamp": datetime.now().isoformat(),
+                "action": "move_stop_loss",
+                "side": position.side.value,
+                "stop_loss_price": stop_loss_price,
+                "result": "success",
+            })
+
+        except Exception as e:
+            self._logger.error(f"Failed to move stop loss: {e}")
+            self._data_pool.add_operation({
+                "timestamp": datetime.now().isoformat(),
+                "action": "move_stop_loss",
+                "stop_loss_price": stop_loss_price,
+                "result": "failed",
+                "error": str(e),
+            })
+
     async def _check_risk(self) -> None:
         """Check risk rules and execute if triggered."""
         if not self._state_machine.has_position:
@@ -687,6 +821,11 @@ class TradingBot:
             if action:
                 self._logger.warning(f"Risk action triggered: {action.reason}")
                 self._notify_risk_event("WARNING", action.reason)
+
+                # Handle move_stop_loss action (profit threshold signal)
+                if action.action_type == "move_stop_loss":
+                    await self._handle_profit_signal(action)
+                    return
 
                 # Force close for high-priority risk actions
                 if action.priority >= 80:
@@ -758,10 +897,351 @@ class TradingBot:
             self._logger.debug(f"Signal not actionable: {signal.signal_type.value}")
             return
 
-        # Only process entry signals when IDLE
-        if not self._state_machine.is_idle:
-            self._logger.debug(f"Not idle, skipping signal: {signal.signal_type.value}")
+        # Check if we should process this signal based on current state
+        if self._state_machine.is_idle:
+            # IDLE state: process entry signals normally
+            await self._process_entry_signal(signal)
+        elif self._state_machine.has_position:
+            # IN_POSITION state: check if signal suggests closing/reversing
+            await self._process_position_signal(signal)
+        else:
+            # Other states (ANALYZING, WAITING_ENTRY, etc.): skip
+            self._logger.debug(f"Busy state, skipping signal: {signal.signal_type.value}")
+
+    async def _process_position_signal(self, signal: Signal) -> None:
+        """Process a signal while in position.
+
+        When in position, we should consider:
+        1. Opposite direction signals (suggest closing current position)
+        2. Same direction signals (could suggest adding, but we'll let AI decide)
+
+        Args:
+            signal: Signal to process
+        """
+        # Get current position
+        position = await self._executor.get_position(self._weex_symbol)
+        if not position:
+            self._logger.debug("No position found, skipping position signal")
             return
+
+        # Determine if signal is opposite to current position
+        is_long_position = position.side == Side.LONG
+        is_bearish_signal = signal.direction == SignalDirection.BEARISH
+        is_bullish_signal = signal.direction == SignalDirection.BULLISH
+
+        is_opposite_signal = (is_long_position and is_bearish_signal) or (
+            not is_long_position and is_bullish_signal
+        )
+
+        # Only process strong opposite signals (weak signals are noise)
+        if not is_opposite_signal:
+            self._logger.debug(
+                f"Same direction signal while in position, skipping: {signal.signal_type.value}"
+            )
+            return
+
+        if signal.strength == SignalStrength.WEAK:
+            self._logger.debug(
+                f"Weak opposite signal while in position, skipping: {signal.signal_type.value}"
+            )
+            return
+
+        # Check debounce to avoid repeated signals
+        if self._state_machine.should_debounce_signal(signal.signal_type.value):
+            self._logger.debug(f"Signal debounced: {signal.signal_type.value}")
+            return
+
+        self._logger.info(
+            f"Opposite signal while in position: {signal.signal_type.value} "
+            f"(position: {position.side.value}, signal: {signal.direction.value})"
+        )
+        self._notify_signal(
+            signal.signal_type.value,
+            f"⚠️ Opposite signal! {signal.description}",
+        )
+
+        # Record signal for debounce
+        self._state_machine.record_signal(signal.signal_type.value)
+
+        # Get market snapshot
+        snapshot = self._data_pool.get_snapshot()
+
+        # Build context for AI to decide whether to close/hold
+        from ai_trading_team.core.signal_queue import (
+            SignalType as OldSignalType,
+        )
+        from ai_trading_team.core.signal_queue import (
+            StrategySignal,
+        )
+
+        # Create signal with position context
+        if is_bearish_signal:
+            old_type = OldSignalType.STRONG_BEARISH
+        else:
+            old_type = OldSignalType.STRONG_BULLISH
+        strategy_signal = StrategySignal(
+            signal_type=old_type,
+            data={
+                "new_signal_type": signal.signal_type.value,
+                "direction": signal.direction.value,
+                "strength": signal.strength.value,
+                "timeframe": signal.timeframe.value,
+                "source": signal.source,
+                "description": signal.description,
+                "context": "opposite_signal_while_in_position",
+                "current_position_side": position.side.value,
+                "current_pnl": float(position.unrealized_pnl),
+                **signal.data,
+            },
+            priority=3,  # High priority for opposite signals
+        )
+
+        self._logger.info("Asking AI about opposite signal while in position...")
+        self._notify_agent_log("OPPOSITE_SIGNAL", signal.signal_type.value, signal.description)
+
+        # Get agent decision
+        decision = await self._agent.process_signal(strategy_signal, snapshot)
+        self._logger.info(
+            f"Agent decision on opposite signal: {decision.command.action.value} - "
+            f"{decision.command.reason[:100]}"
+        )
+
+        # Notify TUI about agent decision
+        self._notify_agent_log(
+            decision.command.action.value.upper(),
+            "Response to opposite signal",
+            decision.command.reason[:60],
+        )
+
+        # Upload AI decision log
+        try:
+            await self._executor.upload_ai_log(
+                stage="Opposite Signal Processing",
+                model=decision.model,
+                input_data={
+                    "signal_type": signal.signal_type.value,
+                    "signal_data": signal.data,
+                    "context": "opposite_signal_while_in_position",
+                    "position_side": position.side.value,
+                    "position_pnl": float(position.unrealized_pnl),
+                },
+                output={
+                    "action": decision.command.action.value,
+                    "reason": decision.command.reason,
+                },
+                explanation=decision.command.reason,
+            )
+        except Exception as e:
+            self._logger.warning(f"Failed to upload AI log: {e}")
+
+        # Handle agent decision
+        if decision.command.action == AgentAction.CLOSE:
+            self._logger.info("Agent decided to close position on opposite signal")
+            await self._execute_close_position(position, decision)
+        elif decision.command.action == AgentAction.REDUCE:
+            self._logger.info("Agent decided to reduce position on opposite signal")
+            await self._execute_reduce_position(position, decision)
+        elif decision.command.action == AgentAction.ADD:
+            self._logger.info("Agent decided to add to position")
+            await self._execute_add_position(position, decision)
+        else:
+            # OBSERVE, HOLD, or other - do nothing
+            self._logger.info(f"Agent decided to hold: {decision.command.reason[:60]}")
+            self._notify_agent_log("HOLD", "Keeping position", decision.command.reason[:60])
+
+    async def _execute_close_position(self, position: Any, decision: Any) -> None:
+        """Execute position close based on agent decision.
+
+        Args:
+            position: Current position
+            decision: Agent decision
+        """
+        try:
+            # Capture position info before closing for trade recording
+            entry_price = float(position.entry_price)
+            exit_price = float(
+                self._data_pool.ticker.get("last_price", 0)
+                if self._data_pool.ticker
+                else 0
+            )
+            realized_pnl = float(position.unrealized_pnl)
+            trade_side = position.side.value
+            trade_size = float(position.size)
+
+            order = await self._executor.close_position(
+                symbol=self._weex_symbol,
+                side=position.side,
+                size=None,  # Close full position
+            )
+
+            if order:
+                self._logger.info(f"Position closed: {order.order_id}")
+                self._notify_agent_log(
+                    "CLOSE", "Position closed", f"PnL: {realized_pnl:.2f}"
+                )
+
+                # Record trade
+                self._data_pool.record_trade(
+                    pnl=realized_pnl,
+                    entry_price=entry_price,
+                    exit_price=exit_price,
+                    side=trade_side,
+                    size=trade_size,
+                )
+
+                # Transition state machine
+                self._state_machine.transition(StateTransition.POSITION_CLOSED)
+
+                # Reset risk monitor
+                self._risk_monitor.reset_rules()
+
+                # Record operation
+                self._data_pool.add_operation({
+                    "timestamp": datetime.now().isoformat(),
+                    "action": "close",
+                    "side": trade_side,
+                    "size": trade_size,
+                    "reason": decision.command.reason[:100],
+                    "result": "success",
+                })
+
+        except Exception as e:
+            self._logger.error(f"Failed to close position: {e}")
+            self._data_pool.add_operation({
+                "timestamp": datetime.now().isoformat(),
+                "action": "close",
+                "result": "failed",
+                "error": str(e),
+            })
+
+    async def _execute_reduce_position(self, position: Any, decision: Any) -> None:
+        """Execute partial position close based on agent decision.
+
+        Args:
+            position: Current position
+            decision: Agent decision with size to reduce
+        """
+        try:
+            reduce_size = decision.command.size
+            if not reduce_size or reduce_size <= 0:
+                self._logger.error("REDUCE action requires positive size")
+                self._notify_agent_log("REDUCE", "Invalid size", "Skipping")
+                return
+
+            # Cap reduce size to position size
+            position_size = float(position.size)
+            if reduce_size >= position_size:
+                self._logger.info("Reduce size >= position size, closing full position")
+                await self._execute_close_position(position, decision)
+                return
+
+            # Calculate proportional P&L for the reduced portion
+            entry_price = float(position.entry_price)
+            exit_price = float(
+                self._data_pool.ticker.get("last_price", 0)
+                if self._data_pool.ticker
+                else 0
+            )
+            total_unrealized_pnl = float(position.unrealized_pnl)
+            reduce_ratio = reduce_size / position_size
+            partial_pnl = total_unrealized_pnl * reduce_ratio
+
+            order = await self._executor.reduce_position(
+                symbol=self._weex_symbol,
+                side=position.side,
+                size=reduce_size,
+            )
+
+            if order:
+                self._logger.info(f"Position reduced by {reduce_size}: {order.order_id}")
+                self._notify_agent_log(
+                    "REDUCE",
+                    f"Reduced by {reduce_size:.4f}",
+                    f"Partial PnL: {partial_pnl:.2f}",
+                )
+
+                # Record partial trade
+                self._data_pool.record_trade(
+                    pnl=partial_pnl,
+                    entry_price=entry_price,
+                    exit_price=exit_price,
+                    side=position.side.value,
+                    size=reduce_size,
+                )
+
+                # Record operation
+                self._data_pool.add_operation({
+                    "timestamp": datetime.now().isoformat(),
+                    "action": "reduce",
+                    "side": position.side.value,
+                    "size": reduce_size,
+                    "remaining_size": position_size - reduce_size,
+                    "reason": decision.command.reason[:100],
+                    "result": "success",
+                })
+
+        except Exception as e:
+            self._logger.error(f"Failed to reduce position: {e}")
+            self._data_pool.add_operation({
+                "timestamp": datetime.now().isoformat(),
+                "action": "reduce",
+                "result": "failed",
+                "error": str(e),
+            })
+
+    async def _execute_add_position(self, position: Any, decision: Any) -> None:
+        """Execute adding to existing position based on agent decision.
+
+        Args:
+            position: Current position
+            decision: Agent decision with size to add
+        """
+        try:
+            add_size = decision.command.size
+            if not add_size or add_size <= 0:
+                self._logger.error("ADD action requires positive size")
+                self._notify_agent_log("ADD", "Invalid size", "Skipping")
+                return
+
+            order = await self._executor.add_to_position(
+                symbol=self._weex_symbol,
+                side=position.side,
+                size=add_size,
+            )
+
+            if order:
+                self._logger.info(f"Added {add_size} to position: {order.order_id}")
+                self._notify_agent_log(
+                    "ADD",
+                    f"Added {add_size:.4f}",
+                    f"New size: {float(position.size) + add_size:.4f}",
+                )
+
+                # Record operation
+                self._data_pool.add_operation({
+                    "timestamp": datetime.now().isoformat(),
+                    "action": "add",
+                    "side": position.side.value,
+                    "size": add_size,
+                    "reason": decision.command.reason[:100],
+                    "result": "success",
+                })
+
+        except Exception as e:
+            self._logger.error(f"Failed to add to position: {e}")
+            self._data_pool.add_operation({
+                "timestamp": datetime.now().isoformat(),
+                "action": "add",
+                "result": "failed",
+                "error": str(e),
+            })
+
+    async def _process_entry_signal(self, signal: Signal) -> None:
+        """Process an entry signal when IDLE.
+
+        Args:
+            signal: Signal to process
+        """
 
         self._logger.info(f"Processing signal: {signal.signal_type.value}")
         self._logger.info(f"{signal.description}")
