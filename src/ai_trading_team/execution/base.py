@@ -104,7 +104,7 @@ class Exchange(ABC):
         symbol: str,
         side: Side,
         size: Decimal | None = None,
-    ) -> Order:
+    ) -> Order | None:
         """Close a position (fully or partially).
 
         Args:
@@ -113,7 +113,7 @@ class Exchange(ABC):
             size: Size to close (None = close all)
 
         Returns:
-            Closing order
+            Closing order, or None if no position to close
         """
         ...
 

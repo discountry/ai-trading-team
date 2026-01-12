@@ -72,7 +72,9 @@ class IndicatorsWidget(Static):
             ma_class = "bullish" if price > ma60 else "bearish"
             diff_pct = ((price - ma60) / ma60 * 100) if ma60 > 0 else 0
             sign = "+" if diff_pct > 0 else ""
-            self._update_indicator("ind-ma60", f"MA60:     {ma60:.4f} ({sign}{diff_pct:.2f}%)", ma_class)
+            self._update_indicator(
+                "ind-ma60", f"MA60:     {ma60:.4f} ({sign}{diff_pct:.2f}%)", ma_class
+            )
         else:
             self._update_indicator("ind-ma60", "MA60:     --", "neutral")
 
@@ -99,9 +101,7 @@ class IndicatorsWidget(Static):
             macd_class = "bullish" if macd > macd_signal else "bearish"
             hist = macd - macd_signal
             self._update_indicator(
-                "ind-macd",
-                f"MACD:     {macd:.6f} (Hist: {hist:+.6f})",
-                macd_class
+                "ind-macd", f"MACD:     {macd:.6f} (Hist: {hist:+.6f})", macd_class
             )
         else:
             self._update_indicator("ind-macd", "MACD:     --", "neutral")
@@ -119,7 +119,9 @@ class IndicatorsWidget(Static):
             else:
                 bb_class = "neutral"
                 bb_status = "Inside"
-            self._update_indicator("ind-bb", f"BB:       {bb_status} [{bb_lower:.2f}-{bb_upper:.2f}]", bb_class)
+            self._update_indicator(
+                "ind-bb", f"BB:       {bb_status} [{bb_lower:.2f}-{bb_upper:.2f}]", bb_class
+            )
         else:
             self._update_indicator("ind-bb", "BB:       --", "neutral")
 
@@ -156,7 +158,7 @@ class IndicatorsWidget(Static):
         # Open Interest
         oi = data.get("open_interest")
         if oi is not None:
-            oi_display = f"{oi/1e6:.2f}M" if oi > 1e6 else f"{oi:,.0f}"
+            oi_display = f"{oi / 1e6:.2f}M" if oi > 1e6 else f"{oi:,.0f}"
             self._update_indicator("ind-oi", f"OI:       {oi_display}", "neutral")
         else:
             self._update_indicator("ind-oi", "OI:       --", "neutral")
@@ -174,5 +176,13 @@ class IndicatorsWidget(Static):
     def clear(self) -> None:
         """Clear all indicators."""
         self._indicators.clear()
-        for ind_id in ["ind-ma60", "ind-rsi", "ind-macd", "ind-bb", "ind-funding", "ind-ls", "ind-oi"]:
+        for ind_id in [
+            "ind-ma60",
+            "ind-rsi",
+            "ind-macd",
+            "ind-bb",
+            "ind-funding",
+            "ind-ls",
+            "ind-oi",
+        ]:
             self._update_indicator(ind_id, f"{ind_id[4:].upper()}:  --", "neutral")

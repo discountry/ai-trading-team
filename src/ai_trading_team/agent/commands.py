@@ -55,9 +55,8 @@ class AgentCommand:
         if self.action == AgentAction.CLOSE and self.side is None:
             errors.append("side is required for close action")
 
-        if (
-            self.action == AgentAction.MOVE_STOP_LOSS
-            and (self.stop_loss_price is None or self.stop_loss_price <= 0)
+        if self.action == AgentAction.MOVE_STOP_LOSS and (
+            self.stop_loss_price is None or self.stop_loss_price <= 0
         ):
             errors.append("stop_loss_price is required for move_stop_loss action")
 

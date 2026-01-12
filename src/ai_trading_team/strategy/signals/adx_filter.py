@@ -239,9 +239,7 @@ class ADXFilter:
         adx_values = self.compute_adx(snapshot, timeframe)
         if adx_values is None:
             # If we can't compute ADX, default to allowing signals
-            logger.warning(
-                f"Could not compute ADX for {timeframe.value}, allowing signal"
-            )
+            logger.warning(f"Could not compute ADX for {timeframe.value}, allowing signal")
             return True
 
         is_trending = adx_values.adx >= self._threshold

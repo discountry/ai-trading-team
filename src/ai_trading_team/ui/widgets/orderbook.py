@@ -117,8 +117,8 @@ class OrderBookWidget(Static):
             bids: List of (price, quantity) tuples for bids
             asks: List of (price, quantity) tuples for asks
         """
-        self._bids = sorted(bids, key=lambda x: x[0], reverse=True)[:self._max_levels]
-        self._asks = sorted(asks, key=lambda x: x[0])[:self._max_levels]
+        self._bids = sorted(bids, key=lambda x: x[0], reverse=True)[: self._max_levels]
+        self._asks = sorted(asks, key=lambda x: x[0])[: self._max_levels]
 
         pp = self._price_precision
         qp = self._qty_precision

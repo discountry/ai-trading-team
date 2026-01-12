@@ -82,9 +82,7 @@ class MACrossoverStrategy(Strategy):
         klines = snapshot.klines.get(self._kline_interval, []) if snapshot.klines else []
 
         if len(klines) < self._long_period + 1:
-            logger.debug(
-                f"Not enough klines: {len(klines)} < {self._long_period + 1}"
-            )
+            logger.debug(f"Not enough klines: {len(klines)} < {self._long_period + 1}")
             return None
 
         # Extract close prices

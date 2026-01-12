@@ -83,9 +83,7 @@ class VolatilityStrategy(Strategy):
 
         return sum(true_ranges[-self._atr_period :]) / self._atr_period
 
-    def _calculate_bollinger_bands(
-        self, closes: list[float]
-    ) -> tuple[float, float, float] | None:
+    def _calculate_bollinger_bands(self, closes: list[float]) -> tuple[float, float, float] | None:
         """Calculate Bollinger Bands.
 
         Returns:
@@ -132,9 +130,7 @@ class VolatilityStrategy(Strategy):
         # Calculate ATR percentile
         sorted_atr = sorted(self._atr_history)
         atr_percentile = (
-            (sorted_atr.index(atr) + 1) / len(sorted_atr) * 100
-            if len(sorted_atr) > 5
-            else 50
+            (sorted_atr.index(atr) + 1) / len(sorted_atr) * 100 if len(sorted_atr) > 5 else 50
         )
 
         # Calculate Bollinger Bands
@@ -154,9 +150,7 @@ class VolatilityStrategy(Strategy):
         # Volatility state change
         if current_vol_state != self._prev_volatility_state:
             if current_vol_state == "low":
-                logger.info(
-                    f"Low volatility detected: ATR percentile={atr_percentile:.1f}%"
-                )
+                logger.info(f"Low volatility detected: ATR percentile={atr_percentile:.1f}%")
                 signal = StrategySignal(
                     signal_type=SignalType.VOLATILITY_LOW,
                     data={
@@ -168,9 +162,7 @@ class VolatilityStrategy(Strategy):
                     priority=3,  # High priority - affects all trading
                 )
             elif current_vol_state == "high" and self._prev_volatility_state == "low":
-                logger.info(
-                    f"Volatility expanding: ATR percentile={atr_percentile:.1f}%"
-                )
+                logger.info(f"Volatility expanding: ATR percentile={atr_percentile:.1f}%")
                 signal = StrategySignal(
                     signal_type=SignalType.VOLATILITY_EXPANDING,
                     data={
@@ -232,7 +224,9 @@ class VolatilityStrategy(Strategy):
                     "middle": middle,
                     "lower": lower,
                     "width_percent": bb_width,
-                    "position": (current_price - lower) / (upper - lower) if upper != lower else 0.5,
+                    "position": (current_price - lower) / (upper - lower)
+                    if upper != lower
+                    else 0.5,
                 },
             )
 

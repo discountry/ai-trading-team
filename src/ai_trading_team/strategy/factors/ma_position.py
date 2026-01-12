@@ -60,8 +60,7 @@ class MAPositionStrategy(Strategy):
 
         if len(klines) < self._ma_period + 1:
             logger.debug(
-                f"Not enough klines for MA{self._ma_period}: "
-                f"{len(klines)} < {self._ma_period + 1}"
+                f"Not enough klines for MA{self._ma_period}: {len(klines)} < {self._ma_period + 1}"
             )
             return None
 

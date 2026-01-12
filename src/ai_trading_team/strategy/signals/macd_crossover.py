@@ -94,9 +94,7 @@ class MACDCrossoverSignal(SignalSource):
 
         return ema
 
-    def _calculate_macd(
-        self, closes: list[float]
-    ) -> tuple[float, float, float] | None:
+    def _calculate_macd(self, closes: list[float]) -> tuple[float, float, float] | None:
         """Calculate MACD, Signal, and Histogram.
 
         Args:

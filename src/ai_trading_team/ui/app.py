@@ -203,7 +203,9 @@ class TradingApp(App[None]):
             # RSI calculation (14 period)
             if len(closes) >= 15:
                 recent_closes = closes[-15:]
-                changes = [recent_closes[i] - recent_closes[i-1] for i in range(1, len(recent_closes))]
+                changes = [
+                    recent_closes[i] - recent_closes[i - 1] for i in range(1, len(recent_closes))
+                ]
                 gains = [max(0, c) for c in changes]
                 losses = [abs(min(0, c)) for c in changes]
                 avg_gain = sum(gains) / 14 if gains else 0
@@ -247,7 +249,7 @@ class TradingApp(App[None]):
                 recent = closes[-period:]
                 sma = sum(recent) / period
                 variance = sum((x - sma) ** 2 for x in recent) / period
-                std = variance ** 0.5
+                std = variance**0.5
                 data["bb_upper"] = sma + 2 * std
                 data["bb_lower"] = sma - 2 * std
                 data["bb_middle"] = sma
@@ -255,8 +257,7 @@ class TradingApp(App[None]):
         # Get funding rate
         if snapshot.funding_rate:
             data["funding_rate"] = snapshot.funding_rate.get(
-                "funding_rate",
-                snapshot.funding_rate.get("lastFundingRate", 0)
+                "funding_rate", snapshot.funding_rate.get("lastFundingRate", 0)
             )
 
         # Get L/S ratio

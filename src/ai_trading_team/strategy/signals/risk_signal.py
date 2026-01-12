@@ -90,16 +90,18 @@ class RiskSignal(SignalSource):
             # Try getting from operations log
             recent_operations = snapshot.recent_operations or []
             risk_ops = [
-                op for op in recent_operations
-                if op.get("source") == "risk" or op.get("type") in [
-                    "stop_loss", "trailing_stop", "take_profit"
-                ]
+                op
+                for op in recent_operations
+                if op.get("source") == "risk"
+                or op.get("type") in ["stop_loss", "trailing_stop", "take_profit"]
             ]
             if risk_ops:
                 latest = risk_ops[-1]
                 event = RiskEvent(
                     event_type=latest.get("type", "unknown"),
-                    timestamp=datetime.fromisoformat(latest.get("timestamp", datetime.now().isoformat())),
+                    timestamp=datetime.fromisoformat(
+                        latest.get("timestamp", datetime.now().isoformat())
+                    ),
                     reason=latest.get("reason", ""),
                     data=latest,
                 )
@@ -112,7 +114,9 @@ class RiskSignal(SignalSource):
             latest = risk_events[-1]
             event = RiskEvent(
                 event_type=latest.get("type", "unknown"),
-                timestamp=datetime.fromisoformat(latest.get("timestamp", datetime.now().isoformat())),
+                timestamp=datetime.fromisoformat(
+                    latest.get("timestamp", datetime.now().isoformat())
+                ),
                 reason=latest.get("reason", ""),
                 data=latest,
             )

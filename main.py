@@ -200,6 +200,23 @@ class TradingBot:
         """
         self._tui_app = tui_app
 
+    def _get_current_price(self) -> float:
+        """Get current market price from data pool with validation.
+
+        Returns:
+            Current price, or 0.0 if unavailable (with warning logged)
+        """
+        if not self._data_pool.ticker:
+            self._logger.warning("Ticker data unavailable when getting current price")
+            return 0.0
+
+        price = float(self._data_pool.ticker.get("last_price", 0))
+        if price <= 0:
+            self._logger.warning(f"Invalid price from ticker: {price}")
+            return 0.0
+
+        return price
+
     def _notify_signal(self, signal_type: str, details: str) -> None:
         """Send signal notification to TUI.
 
@@ -719,9 +736,7 @@ class TradingBot:
             # Execute move_stop_loss if AI decided
             if decision.command.action == AgentAction.MOVE_STOP_LOSS:
                 if decision.command.stop_loss_price:
-                    await self._execute_move_stop_loss(
-                        position, decision.command.stop_loss_price
-                    )
+                    await self._execute_move_stop_loss(position, decision.command.stop_loss_price)
                 else:
                     self._logger.warning("AI returned move_stop_loss without price")
 
@@ -753,9 +768,7 @@ class TradingBot:
         except Exception as e:
             self._logger.error(f"Error processing profit signal: {e}")
 
-    async def _execute_move_stop_loss(
-        self, position: Any, stop_loss_price: float
-    ) -> None:
+    async def _execute_move_stop_loss(self, position: Any, stop_loss_price: float) -> None:
         """Execute stop loss order movement.
 
         Args:
@@ -767,49 +780,52 @@ class TradingBot:
         try:
             # Cancel existing stop loss orders first
             orders = await self._executor.get_open_orders(self._weex_symbol)
+            cancelled_count = 0
             for order in orders:
                 if order.order_type.value in ("stop", "stop_market", "stop_loss"):
                     await self._executor.cancel_order(self._weex_symbol, order.order_id)
                     self._logger.info(f"Cancelled old stop loss order: {order.order_id}")
+                    cancelled_count += 1
 
-            # Place new stop loss order
-            # For LONG position: stop loss is a SELL order triggered below price
-            # For SHORT position: stop loss is a BUY order triggered above price
-            stop_side = Side.SHORT if position.side == Side.LONG else Side.LONG
-
-            # Use preset stop loss if available, otherwise place stop order
-            # Note: Some exchanges support modifying stop loss directly
-            order = await self._executor.place_order(
-                symbol=self._weex_symbol,
-                side=stop_side,
-                order_type=OrderType.MARKET,
-                size=float(position.size),
-                action="close",
-                stop_loss_price=stop_loss_price,
+            # Note: WEEX's preset_stop_loss only works at open time.
+            # To modify stop loss on an existing position, we need to use the
+            # exchange's plan order API (trigger orders).
+            # For now, we log the intended stop loss and update the state context
+            # for the AI to be aware of the intended stop level.
+            self._logger.warning(
+                f"Stop loss move requested to {stop_loss_price:.4f}. "
+                f"Note: Modifying stop loss on existing positions requires plan order API. "
+                f"Cancelled {cancelled_count} existing stop orders."
             )
 
-            self._logger.info(f"New stop loss order placed: {order.order_id}")
-            self._notify_agent_log(
-                "STOP_LOSS", f"Moved to {stop_loss_price:.4f}", "Success"
-            )
+            # Update position context with new stop loss target for AI reference
+            if self._state_machine._context.position:
+                self._state_machine._context.position.stop_loss_price = stop_loss_price
 
-            self._data_pool.add_operation({
-                "timestamp": datetime.now().isoformat(),
-                "action": "move_stop_loss",
-                "side": position.side.value,
-                "stop_loss_price": stop_loss_price,
-                "result": "success",
-            })
+            self._notify_agent_log("STOP_LOSS", f"Target moved to {stop_loss_price:.4f}", "Logged")
+
+            self._data_pool.add_operation(
+                {
+                    "timestamp": datetime.now().isoformat(),
+                    "action": "move_stop_loss",
+                    "side": position.side.value,
+                    "stop_loss_price": stop_loss_price,
+                    "result": "logged",
+                    "note": "Plan order API required for actual stop modification",
+                }
+            )
 
         except Exception as e:
             self._logger.error(f"Failed to move stop loss: {e}")
-            self._data_pool.add_operation({
-                "timestamp": datetime.now().isoformat(),
-                "action": "move_stop_loss",
-                "stop_loss_price": stop_loss_price,
-                "result": "failed",
-                "error": str(e),
-            })
+            self._data_pool.add_operation(
+                {
+                    "timestamp": datetime.now().isoformat(),
+                    "action": "move_stop_loss",
+                    "stop_loss_price": stop_loss_price,
+                    "result": "failed",
+                    "error": str(e),
+                }
+            )
 
     async def _check_risk(self) -> None:
         """Check risk rules and execute if triggered."""
@@ -836,11 +852,7 @@ class TradingBot:
                     if position:
                         # Capture position info before closing for trade recording
                         entry_price = float(position.entry_price)
-                        exit_price = float(
-                            self._data_pool.ticker.get("last_price", 0)
-                            if self._data_pool.ticker
-                            else 0
-                        )
+                        exit_price = self._get_current_price()
                         realized_pnl = float(position.unrealized_pnl)
                         trade_side = position.side.value
                         trade_size = float(position.size)
@@ -1059,11 +1071,7 @@ class TradingBot:
         try:
             # Capture position info before closing for trade recording
             entry_price = float(position.entry_price)
-            exit_price = float(
-                self._data_pool.ticker.get("last_price", 0)
-                if self._data_pool.ticker
-                else 0
-            )
+            exit_price = self._get_current_price()
             realized_pnl = float(position.unrealized_pnl)
             trade_side = position.side.value
             trade_size = float(position.size)
@@ -1076,9 +1084,7 @@ class TradingBot:
 
             if order:
                 self._logger.info(f"Position closed: {order.order_id}")
-                self._notify_agent_log(
-                    "CLOSE", "Position closed", f"PnL: {realized_pnl:.2f}"
-                )
+                self._notify_agent_log("CLOSE", "Position closed", f"PnL: {realized_pnl:.2f}")
 
                 # Record trade
                 self._data_pool.record_trade(
@@ -1096,23 +1102,27 @@ class TradingBot:
                 self._risk_monitor.reset_rules()
 
                 # Record operation
-                self._data_pool.add_operation({
-                    "timestamp": datetime.now().isoformat(),
-                    "action": "close",
-                    "side": trade_side,
-                    "size": trade_size,
-                    "reason": decision.command.reason[:100],
-                    "result": "success",
-                })
+                self._data_pool.add_operation(
+                    {
+                        "timestamp": datetime.now().isoformat(),
+                        "action": "close",
+                        "side": trade_side,
+                        "size": trade_size,
+                        "reason": decision.command.reason[:100],
+                        "result": "success",
+                    }
+                )
 
         except Exception as e:
             self._logger.error(f"Failed to close position: {e}")
-            self._data_pool.add_operation({
-                "timestamp": datetime.now().isoformat(),
-                "action": "close",
-                "result": "failed",
-                "error": str(e),
-            })
+            self._data_pool.add_operation(
+                {
+                    "timestamp": datetime.now().isoformat(),
+                    "action": "close",
+                    "result": "failed",
+                    "error": str(e),
+                }
+            )
 
     async def _execute_reduce_position(self, position: Any, decision: Any) -> None:
         """Execute partial position close based on agent decision.
@@ -1137,11 +1147,7 @@ class TradingBot:
 
             # Calculate proportional P&L for the reduced portion
             entry_price = float(position.entry_price)
-            exit_price = float(
-                self._data_pool.ticker.get("last_price", 0)
-                if self._data_pool.ticker
-                else 0
-            )
+            exit_price = self._get_current_price()
             total_unrealized_pnl = float(position.unrealized_pnl)
             reduce_ratio = reduce_size / position_size
             partial_pnl = total_unrealized_pnl * reduce_ratio
@@ -1170,24 +1176,28 @@ class TradingBot:
                 )
 
                 # Record operation
-                self._data_pool.add_operation({
-                    "timestamp": datetime.now().isoformat(),
-                    "action": "reduce",
-                    "side": position.side.value,
-                    "size": reduce_size,
-                    "remaining_size": position_size - reduce_size,
-                    "reason": decision.command.reason[:100],
-                    "result": "success",
-                })
+                self._data_pool.add_operation(
+                    {
+                        "timestamp": datetime.now().isoformat(),
+                        "action": "reduce",
+                        "side": position.side.value,
+                        "size": reduce_size,
+                        "remaining_size": position_size - reduce_size,
+                        "reason": decision.command.reason[:100],
+                        "result": "success",
+                    }
+                )
 
         except Exception as e:
             self._logger.error(f"Failed to reduce position: {e}")
-            self._data_pool.add_operation({
-                "timestamp": datetime.now().isoformat(),
-                "action": "reduce",
-                "result": "failed",
-                "error": str(e),
-            })
+            self._data_pool.add_operation(
+                {
+                    "timestamp": datetime.now().isoformat(),
+                    "action": "reduce",
+                    "result": "failed",
+                    "error": str(e),
+                }
+            )
 
     async def _execute_add_position(self, position: Any, decision: Any) -> None:
         """Execute adding to existing position based on agent decision.
@@ -1218,23 +1228,27 @@ class TradingBot:
                 )
 
                 # Record operation
-                self._data_pool.add_operation({
-                    "timestamp": datetime.now().isoformat(),
-                    "action": "add",
-                    "side": position.side.value,
-                    "size": add_size,
-                    "reason": decision.command.reason[:100],
-                    "result": "success",
-                })
+                self._data_pool.add_operation(
+                    {
+                        "timestamp": datetime.now().isoformat(),
+                        "action": "add",
+                        "side": position.side.value,
+                        "size": add_size,
+                        "reason": decision.command.reason[:100],
+                        "result": "success",
+                    }
+                )
 
         except Exception as e:
             self._logger.error(f"Failed to add to position: {e}")
-            self._data_pool.add_operation({
-                "timestamp": datetime.now().isoformat(),
-                "action": "add",
-                "result": "failed",
-                "error": str(e),
-            })
+            self._data_pool.add_operation(
+                {
+                    "timestamp": datetime.now().isoformat(),
+                    "action": "add",
+                    "result": "failed",
+                    "error": str(e),
+                }
+            )
 
     async def _process_entry_signal(self, signal: Signal) -> None:
         """Process an entry signal when IDLE.
@@ -1457,11 +1471,7 @@ class TradingBot:
                 # Get position info before closing for trade recording
                 position = await self._executor.get_position(self._weex_symbol)
                 entry_price = float(position.entry_price) if position else 0.0
-                exit_price = float(
-                    self._data_pool.ticker.get("last_price", 0)
-                    if self._data_pool.ticker
-                    else 0
-                )
+                exit_price = self._get_current_price()
                 realized_pnl = float(position.unrealized_pnl) if position else 0.0
                 trade_size = float(position.size) if position else command.size or 0.0
 

@@ -355,7 +355,7 @@ class LangChainTradingAgent:
         account_str = "N/A"
         if snapshot.account:
             acc = snapshot.account
-            available = acc.get('available', 0)
+            available = acc.get("available", 0)
             max_margin = available * self._config.trading.max_position_percent / 100
             account_str = (
                 f"Balance: {acc.get('balance')} USDT, "

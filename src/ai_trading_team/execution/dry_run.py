@@ -106,9 +106,7 @@ class DryRunExecutor:
 
     async def get_account(self) -> Account:
         """Get simulated account information."""
-        total_unrealized_pnl = sum(
-            pos.unrealized_pnl for pos in self._positions.values()
-        )
+        total_unrealized_pnl = sum(pos.unrealized_pnl for pos in self._positions.values())
         used_margin = sum(pos.margin for pos in self._positions.values())
 
         return Account(
@@ -177,8 +175,8 @@ class DryRunExecutor:
         client_oid = f"dry_client_{uuid.uuid4().hex[:8]}"
 
         # Get execution price
-        exec_price = Decimal(str(price)) if price else self._current_prices.get(
-            symbol, Decimal("0")
+        exec_price = (
+            Decimal(str(price)) if price else self._current_prices.get(symbol, Decimal("0"))
         )
 
         order = Order(
@@ -207,9 +205,7 @@ class DryRunExecutor:
 
         return order
 
-    async def _fill_order(
-        self, order: Order, fill_price: Decimal, action: str
-    ) -> Order:
+    async def _fill_order(self, order: Order, fill_price: Decimal, action: str) -> Order:
         """Simulate order fill and update position."""
         order.status = OrderStatus.FILLED
         order.filled_size = order.size
@@ -265,8 +261,7 @@ class DryRunExecutor:
                 )
 
             logger.info(
-                f"[DRY RUN] Opened {order.side.value} position: "
-                f"{size} {symbol} @ {fill_price}"
+                f"[DRY RUN] Opened {order.side.value} position: {size} {symbol} @ {fill_price}"
             )
 
         elif action == "close":
@@ -281,12 +276,9 @@ class DryRunExecutor:
                     logger.info(f"[DRY RUN] Closed position: {symbol}")
                 else:
                     pos.size -= close_size
-                    pos.margin = (pos.size * pos.entry_price) / Decimal(
-                        pos.leverage
-                    )
+                    pos.margin = (pos.size * pos.entry_price) / Decimal(pos.leverage)
                     logger.info(
-                        f"[DRY RUN] Partially closed {close_size} {symbol}, "
-                        f"remaining: {pos.size}"
+                        f"[DRY RUN] Partially closed {close_size} {symbol}, remaining: {pos.size}"
                     )
 
         return order
@@ -336,9 +328,7 @@ class DryRunExecutor:
     async def get_open_orders(self, symbol: str) -> list[Order]:
         """Get simulated open orders for a symbol."""
         return [
-            order
-            for order in self._orders.values()
-            if order.symbol == symbol and order.is_open
+            order for order in self._orders.values() if order.symbol == symbol and order.is_open
         ]
 
     async def close_position(
@@ -388,12 +378,8 @@ class DryRunExecutor:
 
     def get_stats(self) -> dict[str, Any]:
         """Get simulation statistics."""
-        total_unrealized = sum(
-            pos.unrealized_pnl for pos in self._positions.values()
-        )
-        total_realized = sum(
-            pos.realized_pnl for pos in self._positions.values()
-        )
+        total_unrealized = sum(pos.unrealized_pnl for pos in self._positions.values())
+        total_realized = sum(pos.realized_pnl for pos in self._positions.values())
 
         return {
             "initial_balance": float(self._initial_balance),

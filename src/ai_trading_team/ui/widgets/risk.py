@@ -110,7 +110,9 @@ class RiskWidget(Static):
                 dd_class = "risk-warning"
             else:
                 dd_class = "risk-danger"
-            self._update_status_line("risk-drawdown", f"Drawdown:  {drawdown_percent:.2f}%", dd_class)
+            self._update_status_line(
+                "risk-drawdown", f"Drawdown:  {drawdown_percent:.2f}%", dd_class
+            )
         else:
             self._update_status_line("risk-drawdown", "Drawdown:  --", "")
 
@@ -123,9 +125,7 @@ class RiskWidget(Static):
         # Trailing Stop
         if trailing_stop_active and trailing_stop_price:
             self._update_status_line(
-                "risk-trailing",
-                f"Trailing:  ACTIVE @ {trailing_stop_price:.4f}",
-                "risk-warning"
+                "risk-trailing", f"Trailing:  ACTIVE @ {trailing_stop_price:.4f}", "risk-warning"
             )
         elif trailing_stop_active:
             self._update_status_line("risk-trailing", "Trailing:  ACTIVE", "risk-warning")
@@ -166,11 +166,13 @@ class RiskWidget(Static):
             "INFO": "[cyan]",
         }
 
-        self._risk_logs.append({
-            "timestamp": ts,
-            "type": event_type,
-            "message": message,
-        })
+        self._risk_logs.append(
+            {
+                "timestamp": ts,
+                "type": event_type,
+                "message": message,
+            }
+        )
 
         # Keep only last 20 entries
         if len(self._risk_logs) > 20:

@@ -114,7 +114,7 @@ class PriceChartWidget(Static):
         self._prices.clear()
         self._times.clear()
 
-        for kline in klines[-self._max_points:]:
+        for kline in klines[-self._max_points :]:
             close = float(kline.get("close", 0))
             if close > 0:
                 self._prices.append(close)

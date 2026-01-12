@@ -202,9 +202,7 @@ class MockExecutor:
 
         return order
 
-    async def _execute_order(
-        self, order: Order, action: str, exec_price: Decimal
-    ) -> None:
+    async def _execute_order(self, order: Order, action: str, exec_price: Decimal) -> None:
         """Execute an order and update position."""
         size = order.size
 
@@ -270,9 +268,7 @@ class MockExecutor:
 
         self._order_history.append(order)
 
-    async def _close_position_internal(
-        self, size: Decimal | None = None
-    ) -> Decimal:
+    async def _close_position_internal(self, size: Decimal | None = None) -> Decimal:
         """Close position and return realized P&L."""
         if not self._position:
             return Decimal("0")
@@ -371,9 +367,7 @@ class MockExecutor:
         logger.info(f"[MOCK] Position closed with P&L: {pnl:+.2f}")
         return order
 
-    async def reduce_position(
-        self, symbol: str, side: Side, size: float
-    ) -> Order | None:
+    async def reduce_position(self, symbol: str, side: Side, size: float) -> Order | None:
         """Partially close a position.
 
         Args:

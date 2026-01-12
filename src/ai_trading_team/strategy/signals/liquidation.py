@@ -211,8 +211,7 @@ class LiquidationSignal(SignalSource):
                     "value_millions": value_m,
                 },
                 description=(
-                    f"LONG Liquidation: ${value_m:.2f}M - "
-                    f"Forced selling pressure (bearish)"
+                    f"LONG Liquidation: ${value_m:.2f}M - Forced selling pressure (bearish)"
                 ),
             )
 
@@ -230,8 +229,7 @@ class LiquidationSignal(SignalSource):
                     "value_millions": value_m,
                 },
                 description=(
-                    f"SHORT Liquidation: ${value_m:.2f}M - "
-                    f"Forced buying pressure (bullish)"
+                    f"SHORT Liquidation: ${value_m:.2f}M - Forced buying pressure (bullish)"
                 ),
             )
 

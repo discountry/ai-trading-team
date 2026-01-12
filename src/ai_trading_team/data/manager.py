@@ -109,22 +109,17 @@ class OrderBookManager:
             Dict with 'bids' and 'asks' as sorted [price, qty] lists
         """
         # Sort bids descending by price (highest first), take top N
-        sorted_bids = sorted(
-            self._bids.items(),
-            key=lambda x: x[0],
-            reverse=True
-        )[:self._max_levels]
+        sorted_bids = sorted(self._bids.items(), key=lambda x: x[0], reverse=True)[
+            : self._max_levels
+        ]
 
         # Sort asks ascending by price (lowest first), take top N
-        sorted_asks = sorted(
-            self._asks.items(),
-            key=lambda x: x[0]
-        )[:self._max_levels]
+        sorted_asks = sorted(self._asks.items(), key=lambda x: x[0])[: self._max_levels]
 
         # Convert to string format for JSON serialization
         return {
             "bids": [[str(p), str(q)] for p, q in sorted_bids],
-            "asks": [[str(p), str(q)] for p, q in sorted_asks]
+            "asks": [[str(p), str(q)] for p, q in sorted_asks],
         }
 
 
@@ -232,9 +227,7 @@ class BinanceDataManager:
                 )
                 kline_dicts = [self._kline_to_dict(k) for k in klines]
                 self._data_pool.update_klines(self._kline_interval, kline_dicts)
-                logger.info(
-                    f"Initialized {len(klines)} klines for {symbol} {self._kline_interval}"
-                )
+                logger.info(f"Initialized {len(klines)} klines for {symbol} {self._kline_interval}")
 
             # Fetch extended market data
             await self._fetch_extended_data(symbol)
@@ -262,9 +255,7 @@ class BinanceDataManager:
 
             # Initialize orderbook manager with snapshot
             self._orderbook_manager.set_snapshot(
-                bids=bids,
-                asks=asks,
-                last_update_id=orderbook.last_update_id or 0
+                bids=bids, asks=asks, last_update_id=orderbook.last_update_id or 0
             )
 
             # Update data pool with initial orderbook
@@ -276,11 +267,15 @@ class BinanceDataManager:
         try:
             # Fetch funding rate
             funding = await self._rest_client.get_funding_rate(symbol)
-            self._data_pool.update_funding_rate({
-                "symbol": symbol,
-                "funding_rate": float(funding.funding_rate),
-                "funding_time": funding.funding_time.isoformat() if funding.funding_time else None,
-            })
+            self._data_pool.update_funding_rate(
+                {
+                    "symbol": symbol,
+                    "funding_rate": float(funding.funding_rate),
+                    "funding_time": funding.funding_time.isoformat()
+                    if funding.funding_time
+                    else None,
+                }
+            )
             logger.info(f"Fetched funding rate for {symbol}: {funding.funding_rate}")
         except Exception as e:
             logger.warning(f"Failed to fetch funding rate: {e}")
@@ -288,10 +283,12 @@ class BinanceDataManager:
         try:
             # Fetch open interest
             oi = await self._rest_client.get_open_interest(symbol)
-            self._data_pool.update_open_interest({
-                "symbol": symbol,
-                "open_interest": float(oi.open_interest),
-            })
+            self._data_pool.update_open_interest(
+                {
+                    "symbol": symbol,
+                    "open_interest": float(oi.open_interest),
+                }
+            )
             logger.info(f"Fetched open interest for {symbol}: {oi.open_interest}")
         except Exception as e:
             logger.warning(f"Failed to fetch open interest: {e}")
@@ -299,12 +296,14 @@ class BinanceDataManager:
         try:
             # Fetch long/short ratio
             ls = await self._rest_client.get_long_short_ratio(symbol)
-            self._data_pool.update_long_short_ratio({
-                "symbol": symbol,
-                "long_ratio": float(ls.long_ratio),
-                "short_ratio": float(ls.short_ratio),
-                "long_short_ratio": float(ls.long_short_ratio),
-            })
+            self._data_pool.update_long_short_ratio(
+                {
+                    "symbol": symbol,
+                    "long_ratio": float(ls.long_ratio),
+                    "short_ratio": float(ls.short_ratio),
+                    "long_short_ratio": float(ls.long_short_ratio),
+                }
+            )
             logger.info(f"Fetched L/S ratio for {symbol}: {ls.long_short_ratio}")
         except Exception as e:
             logger.warning(f"Failed to fetch L/S ratio: {e}")

@@ -91,9 +91,7 @@ class TradingStats:
         """Average winning trade P&L."""
         if self.winning_trades == 0:
             return 0.0
-        total_wins = sum(
-            t.get("pnl", 0) for t in (self.trade_history or []) if t.get("pnl", 0) > 0
-        )
+        total_wins = sum(t.get("pnl", 0) for t in (self.trade_history or []) if t.get("pnl", 0) > 0)
         return total_wins / self.winning_trades
 
     @property
@@ -126,7 +124,9 @@ class TradingStats:
             "largest_loss": round(self.largest_loss, 2),
             "avg_win": round(self.avg_win, 2),
             "avg_loss": round(self.avg_loss, 2),
-            "profit_factor": round(self.profit_factor, 2) if self.profit_factor != float("inf") else "∞",
+            "profit_factor": round(self.profit_factor, 2)
+            if self.profit_factor != float("inf")
+            else "∞",
             "total_return_percent": round(self.total_return_percent, 2),
             "initial_balance": round(self.initial_balance, 2),
             "current_equity": round(self.current_equity, 2),
@@ -274,7 +274,7 @@ class DataPool:
             self._recent_operations.append(operation)
             # Keep only last N operations
             if len(self._recent_operations) > self._max_operations_history:
-                self._recent_operations = self._recent_operations[-self._max_operations_history:]
+                self._recent_operations = self._recent_operations[-self._max_operations_history :]
 
     def update_symbol_info(self, symbol_info: dict[str, Any]) -> None:
         """Update symbol info (precision, filters, etc.)."""
@@ -349,7 +349,7 @@ class DataPool:
 
             # Keep only last N trades
             if len(stats.trade_history) > self._max_trade_history:
-                stats.trade_history = stats.trade_history[-self._max_trade_history:]
+                stats.trade_history = stats.trade_history[-self._max_trade_history :]
 
     def update_equity(self, current_equity: float, unrealized_pnl: float = 0.0) -> None:
         """Update current account equity and unrealized P&L.

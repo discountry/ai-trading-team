@@ -242,9 +242,7 @@ class BinanceRestClient:
         # Parse next funding time
         next_funding_ms = data.get("nextFundingTime", 0)
         funding_time = (
-            datetime.fromtimestamp(next_funding_ms / 1000)
-            if next_funding_ms
-            else datetime.now()
+            datetime.fromtimestamp(next_funding_ms / 1000) if next_funding_ms else datetime.now()
         )
 
         return FundingRate(
@@ -296,9 +294,7 @@ class BinanceRestClient:
             timestamp=datetime.now(),
         )
 
-    async def get_long_short_ratio(
-        self, symbol: str, period: str = "5m"
-    ) -> LongShortRatio:
+    async def get_long_short_ratio(self, symbol: str, period: str = "5m") -> LongShortRatio:
         """Get long/short ratio.
 
         Args:

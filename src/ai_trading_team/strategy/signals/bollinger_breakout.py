@@ -75,9 +75,7 @@ class BollingerBreakoutSignal(SignalSource):
         self._period = period
         self._std_dev = std_dev
 
-    def _calculate_bb(
-        self, closes: list[float]
-    ) -> tuple[float, float, float] | None:
+    def _calculate_bb(self, closes: list[float]) -> tuple[float, float, float] | None:
         """Calculate Bollinger Bands.
 
         Args:
@@ -89,12 +87,12 @@ class BollingerBreakoutSignal(SignalSource):
         if len(closes) < self._period:
             return None
 
-        recent = closes[-self._period:]
+        recent = closes[-self._period :]
         middle = sum(recent) / len(recent)
 
         # Calculate standard deviation
         variance = sum((x - middle) ** 2 for x in recent) / len(recent)
-        std = variance ** 0.5
+        std = variance**0.5
 
         upper = middle + (self._std_dev * std)
         lower = middle - (self._std_dev * std)
@@ -157,9 +155,7 @@ class BollingerBreakoutSignal(SignalSource):
 
         return self._create_state(price, upper, middle, lower)
 
-    def _create_state(
-        self, price: float, upper: float, middle: float, lower: float
-    ) -> BBState:
+    def _create_state(self, price: float, upper: float, middle: float, lower: float) -> BBState:
         """Create BBState from values."""
         # Determine position
         if price > upper:

@@ -215,9 +215,7 @@ class RSIExtremeSignal(SignalSource):
             )
 
         # Entering overbought
-        elif (
-            new_state.zone == RSIZone.OVERBOUGHT and prev_state.zone != RSIZone.OVERBOUGHT
-        ):
+        elif new_state.zone == RSIZone.OVERBOUGHT and prev_state.zone != RSIZone.OVERBOUGHT:
             signal = Signal(
                 signal_type=SignalType.RSI_ENTER_OVERBOUGHT,
                 direction=SignalDirection.NEUTRAL,

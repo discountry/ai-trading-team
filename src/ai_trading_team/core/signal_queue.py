@@ -42,7 +42,9 @@ class SignalType(str, Enum):
     SHORTS_DOMINANT = "shorts_dominant"  # More shorts -> lean long
 
     # Open Interest signals
-    OI_INCREASING_CONSOLIDATION = "oi_increasing_consolidation"  # OI up + price flat -> big move coming
+    OI_INCREASING_CONSOLIDATION = (
+        "oi_increasing_consolidation"  # OI up + price flat -> big move coming
+    )
     OI_DIVERGENCE_BULLISH = "oi_divergence_bullish"  # Price down + OI down -> bullish
     OI_DIVERGENCE_BEARISH = "oi_divergence_bearish"  # Price up + OI down -> bearish
 

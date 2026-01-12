@@ -69,6 +69,7 @@ class PositionContext:
     entry_time: datetime | None = None
     highest_pnl_percent: Decimal = Decimal("0")  # For trailing stop
     last_profit_signal_threshold: Decimal = Decimal("0")  # Last 10% threshold crossed
+    stop_loss_price: float | None = None  # Current stop loss target price
 
 
 @dataclass
@@ -136,7 +137,9 @@ class StrategyStateMachine:
         self._profit_signal_threshold = profit_signal_threshold
 
         # Valid state transitions
-        self._valid_transitions: dict[StrategyState, list[tuple[StateTransition, StrategyState]]] = {
+        self._valid_transitions: dict[
+            StrategyState, list[tuple[StateTransition, StrategyState]]
+        ] = {
             StrategyState.IDLE: [
                 (StateTransition.ENTRY_SIGNAL, StrategyState.ANALYZING),
             ],
@@ -292,8 +295,7 @@ class StrategyStateMachine:
         self._context.state_entered_at = datetime.now()
 
         logger.info(
-            f"State transition: {prev_state.value} -> {next_state.value} "
-            f"(trigger: {trigger.value})"
+            f"State transition: {prev_state.value} -> {next_state.value} (trigger: {trigger.value})"
         )
 
         # Handle state-specific initialization
@@ -374,17 +376,14 @@ class StrategyStateMachine:
         # Check for profit threshold signal (every 10% increase)
         if self._context.current_state == StrategyState.IN_POSITION:
             next_threshold = (
-                self._context.position.last_profit_signal_threshold
-                + self._profit_signal_threshold
+                self._context.position.last_profit_signal_threshold + self._profit_signal_threshold
             )
             if unrealized_pnl_percent >= next_threshold:
                 self._context.position.last_profit_signal_threshold = (
-                    (unrealized_pnl_percent // self._profit_signal_threshold)
-                    * self._profit_signal_threshold
-                )
+                    unrealized_pnl_percent // self._profit_signal_threshold
+                ) * self._profit_signal_threshold
                 logger.info(
-                    f"Profit threshold reached: PnL {unrealized_pnl_percent}% >= "
-                    f"{next_threshold}%"
+                    f"Profit threshold reached: PnL {unrealized_pnl_percent}% >= {next_threshold}%"
                 )
                 return StateTransition.PROFIT_THRESHOLD
 

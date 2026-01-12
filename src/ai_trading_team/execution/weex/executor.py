@@ -326,9 +326,7 @@ class WEEXExecutor:
             logger.error(f"Failed to close position: {e}")
             return None
 
-    async def reduce_position(
-        self, symbol: str, side: Side, size: float
-    ) -> Order | None:
+    async def reduce_position(self, symbol: str, side: Side, size: float) -> Order | None:
         """Partially close a position.
 
         Args:

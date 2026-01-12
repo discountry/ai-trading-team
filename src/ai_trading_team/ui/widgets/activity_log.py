@@ -54,12 +54,14 @@ class ActivityLogWidget(Static):
         ts = timestamp or datetime.now()
         ts_str = ts.strftime("%H:%M:%S")
 
-        self._logs.append({
-            "timestamp": ts,
-            "type": "signal",
-            "signal_type": signal_type,
-            "details": details,
-        })
+        self._logs.append(
+            {
+                "timestamp": ts,
+                "type": "signal",
+                "signal_type": signal_type,
+                "details": details,
+            }
+        )
 
         log_widget = self.query_one("#activity-log", RichLog)
         log_widget.write(f"[dim]{ts_str}[/] [magenta]SIGNAL[/]  {signal_type}: {details}")
@@ -94,13 +96,15 @@ class ActivityLogWidget(Static):
         }
         color = action_colors.get(action.upper(), "white")
 
-        self._logs.append({
-            "timestamp": ts,
-            "type": "action",
-            "action": action,
-            "details": details,
-            "result": result,
-        })
+        self._logs.append(
+            {
+                "timestamp": ts,
+                "type": "action",
+                "action": action,
+                "details": details,
+                "result": result,
+            }
+        )
 
         log_line = f"[dim]{ts_str}[/] [{color}]{action:8}[/] {details}"
         if result:
@@ -136,13 +140,15 @@ class ActivityLogWidget(Static):
         }
         color = decision_colors.get(decision.upper(), "white")
 
-        self._logs.append({
-            "timestamp": ts,
-            "type": "decision",
-            "signal_type": signal_type,
-            "decision": decision,
-            "reason": reason,
-        })
+        self._logs.append(
+            {
+                "timestamp": ts,
+                "type": "decision",
+                "signal_type": signal_type,
+                "decision": decision,
+                "reason": reason,
+            }
+        )
 
         log_widget = self.query_one("#activity-log", RichLog)
         log_widget.write(f"[dim]{ts_str}[/] [magenta]SIGNAL[/]  {signal_type}")
@@ -175,12 +181,14 @@ class ActivityLogWidget(Static):
         }
         color = risk_colors.get(event_type.upper(), "yellow")
 
-        self._logs.append({
-            "timestamp": ts,
-            "type": "risk",
-            "event_type": event_type,
-            "message": message,
-        })
+        self._logs.append(
+            {
+                "timestamp": ts,
+                "type": "risk",
+                "event_type": event_type,
+                "message": message,
+            }
+        )
 
         log_widget = self.query_one("#activity-log", RichLog)
         log_widget.write(f"[dim]{ts_str}[/] [{color}]RISK[/]    {event_type}: {message}")

@@ -176,8 +176,7 @@ class OpenInterestSignal(SignalSource):
         # First update - no transition
         if prev_state is None:
             logger.debug(
-                f"[{self._name}] {timeframe.value} initialized: "
-                f"OI={new_state.current_oi:,.0f}"
+                f"[{self._name}] {timeframe.value} initialized: OI={new_state.current_oi:,.0f}"
             )
             return None
 

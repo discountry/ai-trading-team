@@ -210,9 +210,7 @@ class SignalAggregator:
 
         logger.info(f"Initialized {len(self._sources)} signal sources")
         for source in self._sources:
-            logger.debug(
-                f"  - {source.name}: timeframes={[tf.value for tf in source.timeframes]}"
-            )
+            logger.debug(f"  - {source.name}: timeframes={[tf.value for tf in source.timeframes]}")
 
     def _check_data_ready(self, snapshot: Any) -> bool:
         """Check if all required data is available.
@@ -407,8 +405,7 @@ class SignalAggregator:
 
         # Filter recent signals within window, excluding confluence signals themselves
         recent = [
-            s for s in self._recent_signals
-            if s.timestamp > cutoff and s.source != "aggregator"
+            s for s in self._recent_signals if s.timestamp > cutoff and s.source != "aggregator"
         ]
 
         if len(recent) < config.min_signals_for_confluence:
@@ -438,7 +435,9 @@ class SignalAggregator:
             return Signal(
                 signal_type=SignalType.BULLISH_CONFLUENCE,
                 direction=SignalDirection.BULLISH,
-                strength=SignalStrength.STRONG if bullish_score >= min_score * 2 else SignalStrength.MODERATE,
+                strength=SignalStrength.STRONG
+                if bullish_score >= min_score * 2
+                else SignalStrength.MODERATE,
                 timeframe=Timeframe.H1,  # Confluence is multi-timeframe
                 source="aggregator",
                 data={
@@ -458,7 +457,9 @@ class SignalAggregator:
             return Signal(
                 signal_type=SignalType.BEARISH_CONFLUENCE,
                 direction=SignalDirection.BEARISH,
-                strength=SignalStrength.STRONG if bearish_score >= min_score * 2 else SignalStrength.MODERATE,
+                strength=SignalStrength.STRONG
+                if bearish_score >= min_score * 2
+                else SignalStrength.MODERATE,
                 timeframe=Timeframe.H1,
                 source="aggregator",
                 data={
@@ -508,9 +509,7 @@ class SignalAggregator:
             states[source.name] = {
                 "enabled": source.enabled,
                 "timeframes": [tf.value for tf in source.timeframes],
-                "states": {
-                    tf.value: str(source.get_state(tf)) for tf in source.timeframes
-                },
+                "states": {tf.value: str(source.get_state(tf)) for tf in source.timeframes},
             }
         return states
 

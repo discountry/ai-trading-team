@@ -110,10 +110,7 @@ class OrderStatusSignal(SignalSource):
 
         # First update - no transition
         if prev_state is None:
-            logger.debug(
-                f"[{self._name}] initialized: "
-                f"{new_state.order_count} open orders"
-            )
+            logger.debug(f"[{self._name}] initialized: {new_state.order_count} open orders")
             return None
 
         if not isinstance(prev_state, OrderState):
@@ -195,8 +192,7 @@ class OrderStatusSignal(SignalSource):
                             "operation": order_op,
                         },
                         description=(
-                            f"Order PARTIAL FILL: {order_id} - "
-                            f"{order_details.get('side', 'N/A')}"
+                            f"Order PARTIAL FILL: {order_id} - {order_details.get('side', 'N/A')}"
                         ),
                     )
 

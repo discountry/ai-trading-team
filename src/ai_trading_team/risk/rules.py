@@ -79,6 +79,10 @@ class StopLossRule(RiskRule):
         if not position:
             return None
 
+        # Guard against zero margin
+        if position.margin <= 0:
+            return None
+
         # Calculate P&L percentage
         pnl_percent = (position.unrealized_pnl / position.margin) * 100
 
@@ -110,6 +114,10 @@ class TakeProfitRule(RiskRule):
     ) -> RiskAction | None:
         """Check if position has reached take profit threshold."""
         if not position:
+            return None
+
+        # Guard against zero margin
+        if position.margin <= 0:
             return None
 
         # Calculate P&L percentage
@@ -259,7 +267,9 @@ class DynamicTakeProfitRule(RiskRule):
             return None
 
         # Calculate which threshold level we're at (10, 20, 30, ...)
-        current_threshold_level = (pnl_percent // self.profit_threshold_percent) * self.profit_threshold_percent
+        current_threshold_level = (
+            pnl_percent // self.profit_threshold_percent
+        ) * self.profit_threshold_percent
 
         # Check if we crossed a new threshold
         if current_threshold_level > self._last_signaled_threshold:

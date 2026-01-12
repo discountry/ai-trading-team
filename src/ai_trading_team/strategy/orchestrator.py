@@ -240,9 +240,7 @@ class StrategyOrchestrator:
                 highest_priority = signal.priority
 
         # Compute weighted total score
-        total_score = sum(
-            score.bullish_score * score.weight for score in factor_scores
-        )
+        total_score = sum(score.bullish_score * score.weight for score in factor_scores)
 
         # Apply market bias adjustment
         bias_adjustment = self._get_bias_adjustment()
@@ -352,7 +350,9 @@ class StrategyOrchestrator:
             if self._volatility.is_low_volatility(snapshot):
                 bullish_score = 0.0  # Neutral, but flagged elsewhere
                 data["low_volatility"] = True
-            data["volatility_state"] = "low" if self._volatility.is_low_volatility(snapshot) else "normal"
+            data["volatility_state"] = (
+                "low" if self._volatility.is_low_volatility(snapshot) else "normal"
+            )
 
         return FactorScore(
             factor_name=factor.name,
@@ -528,11 +528,12 @@ class StrategyOrchestrator:
         if self._state_machine.should_debounce_signal(signal_type.value):
             remaining = (
                 self._state_machine.context.signal_debounce_seconds
-                - (datetime.now() - (self._state_machine.context.last_signal_time or datetime.now())).total_seconds()
+                - (
+                    datetime.now()
+                    - (self._state_machine.context.last_signal_time or datetime.now())
+                ).total_seconds()
             )
-            logger.debug(
-                f"Signal debounced: {signal_type.value} (wait {remaining:.0f}s more)"
-            )
+            logger.debug(f"Signal debounced: {signal_type.value} (wait {remaining:.0f}s more)")
             return None
 
         # Record signal for debounce tracking
@@ -544,7 +545,9 @@ class StrategyOrchestrator:
             data={
                 "composite_score": composite.total_score,
                 "strength": composite.strength.value,
-                "suggested_side": composite.suggested_side.value if composite.suggested_side else None,
+                "suggested_side": composite.suggested_side.value
+                if composite.suggested_side
+                else None,
                 "market_bias": composite.market_bias.value,
                 "volatility_ok": composite.volatility_ok,
                 "factor_analysis": [
