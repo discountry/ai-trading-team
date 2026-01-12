@@ -35,4 +35,5 @@ htmlcov/
 # Ruff
 .ruff_cache/
 
+
 sessions/*.json
