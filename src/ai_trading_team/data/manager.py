@@ -340,10 +340,18 @@ class BinanceDataManager:
         # For partial depth streams, we receive full orderbook snapshots
         # Use OrderBookManager.set_snapshot() to replace the entire orderbook
         # log_info=False to avoid flooding logs with every WebSocket update
+        if not bids and not asks:
+            logger.debug("Empty orderbook update received, skipping")
+            return
+
         self._orderbook_manager.set_snapshot(bids, asks, log_info=False)
 
         # Update data pool with current orderbook state
-        self._data_pool.update_orderbook(self._orderbook_manager.get_orderbook())
+        orderbook = self._orderbook_manager.get_orderbook()
+        if orderbook.get("bids") or orderbook.get("asks"):
+            self._data_pool.update_orderbook(orderbook)
+        else:
+            logger.warning("OrderBookManager returned empty orderbook after set_snapshot")
 
     @staticmethod
     def _ticker_to_dict(ticker: Ticker) -> dict[str, Any]:

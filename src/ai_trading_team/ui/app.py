@@ -89,6 +89,8 @@ class TradingApp(App[None]):
                 await self._update_ui()
             except Exception as e:
                 self.log.error(f"UI update error: {e}")
+                import traceback
+                self.log.error(traceback.format_exc())
 
             await asyncio.sleep(1.0)  # Update every second
 
@@ -134,10 +136,11 @@ class TradingApp(App[None]):
         if snapshot.orderbook:
             bids = snapshot.orderbook.get("bids", [])
             asks = snapshot.orderbook.get("asks", [])
-            # Convert to tuples
-            bid_tuples = [(float(b[0]), float(b[1])) for b in bids[:10] if len(b) >= 2]
-            ask_tuples = [(float(a[0]), float(a[1])) for a in asks[:10] if len(a) >= 2]
-            dashboard.orderbook_widget.update_orderbook(bid_tuples, ask_tuples)
+            if bids or asks:
+                # Convert to tuples
+                bid_tuples = [(float(b[0]), float(b[1])) for b in bids[:10] if len(b) >= 2]
+                ask_tuples = [(float(a[0]), float(a[1])) for a in asks[:10] if len(a) >= 2]
+                dashboard.orderbook_widget.update_orderbook(bid_tuples, ask_tuples)
 
         # Update indicators
         indicators_data = self._build_indicators_data(snapshot)

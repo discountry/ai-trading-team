@@ -1,12 +1,15 @@
 """Binance WebSocket stream client."""
 
 import asyncio
+import contextlib
+import json
 import logging
 from collections.abc import Callable
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
+import websockets
 from binance_common.configuration import ConfigurationWebSocketStreams
 from binance_sdk_derivatives_trading_usds_futures.derivatives_trading_usds_futures import (
     DerivativesTradingUsdsFutures,
@@ -50,6 +53,9 @@ class BinanceStreamClient:
         self._reconnect_task: asyncio.Task | None = None
         self._symbol: str | None = None
         self._kline_interval: str = "1m"
+        # Raw depth WebSocket (bypass buggy SDK parsing)
+        self._depth_ws: Any = None
+        self._depth_task: asyncio.Task | None = None
 
     def _get_client(self) -> DerivativesTradingUsdsFutures:
         """Get or create Binance client."""
@@ -140,21 +146,86 @@ class BinanceStreamClient:
             kline_stream.on("message", self._handle_kline)
             logger.info(f"Subscribed to kline stream: {symbol_lower}@{kline_interval}")
 
-            # Subscribe to partial depth stream for orderbook updates
-            # Using partial_book_depth_streams instead of diff_book_depth_streams
-            # because partial streams send complete top N levels every update,
-            # avoiding the need for complex diff synchronization
-            depth_stream = await self._connection.partial_book_depth_streams(
-                symbol=symbol_lower,
-                levels=10,  # Top 10 price levels on each side
+            # Start raw depth WebSocket (bypass buggy SDK parsing)
+            self._depth_task = asyncio.create_task(
+                self._run_depth_stream(symbol_lower)
             )
-            depth_stream.on("message", self._handle_partial_depth)
-            logger.info(f"Subscribed to partial depth stream: {symbol_lower}@depth10")
+            logger.info(f"Started raw depth stream: {symbol_lower}@depth10")
 
         except Exception as e:
             self._connected = False
             logger.error(f"Failed to connect WebSocket: {e}")
             raise
+
+    async def _run_depth_stream(self, symbol: str) -> None:
+        """Run raw WebSocket for depth data.
+
+        The Binance SDK has a bug where it doesn't parse depth messages correctly.
+        We use raw websockets to bypass the SDK and get proper orderbook data.
+
+        Args:
+            symbol: Trading pair in lowercase
+        """
+        uri = f"wss://stream.binance.com:9443/ws/{symbol}@depth10@100ms"
+
+        while self._running:
+            try:
+                async with websockets.connect(uri) as ws:
+                    self._depth_ws = ws
+                    logger.info(f"Raw depth WebSocket connected: {uri}")
+
+                    async for message in ws:
+                        if not self._running:
+                            break
+                        try:
+                            data = json.loads(message)
+                            self._handle_raw_depth(data)
+                        except json.JSONDecodeError as e:
+                            logger.warning(f"Failed to parse depth message: {e}")
+
+            except websockets.exceptions.ConnectionClosed as e:
+                if self._running:
+                    logger.warning(f"Depth WebSocket closed: {e}, reconnecting...")
+                    await asyncio.sleep(1)
+            except Exception as e:
+                if self._running:
+                    logger.error(f"Depth WebSocket error: {e}, reconnecting...")
+                    await asyncio.sleep(1)
+
+        self._depth_ws = None
+
+    def _handle_raw_depth(self, data: dict) -> None:
+        """Handle raw depth data from WebSocket.
+
+        Args:
+            data: Raw JSON data with 'bids' and 'asks' keys
+        """
+        try:
+            bids_data = data.get("bids", [])
+            asks_data = data.get("asks", [])
+
+            bids = [[str(b[0]), str(b[1])] for b in bids_data if len(b) >= 2]
+            asks = [[str(a[0]), str(a[1])] for a in asks_data if len(a) >= 2]
+
+            if not bids and not asks:
+                return
+
+            # Validate orderbook integrity
+            if bids and asks:
+                best_bid = float(bids[0][0])
+                best_ask = float(asks[0][0])
+                if best_bid >= best_ask:
+                    logger.warning(
+                        f"Invalid orderbook: best_bid({best_bid}) >= best_ask({best_ask})"
+                    )
+                    return
+
+            # Notify callbacks
+            for callback in self._callbacks["depth"]:
+                callback(bids, asks)
+
+        except Exception as e:
+            logger.error(f"Error handling raw depth: {e}")
 
     def _handle_ticker(self, message: Any) -> None:
         """Handle incoming ticker data."""
@@ -209,96 +280,6 @@ class BinanceStreamClient:
         except Exception as e:
             logger.error(f"Error handling kline: {e}")
 
-    def _handle_depth(self, message: Any) -> None:
-        """Handle incoming depth (orderbook) diff data.
-
-        NOTE: This is for diff_book_depth_streams (currently unused).
-        We now use _handle_partial_depth for partial_book_depth_streams.
-        """
-        try:
-            # Convert Pydantic model to dict first (like ticker/kline handlers)
-            data = message.to_dict() if hasattr(message, "to_dict") else message
-
-            bids = []
-            asks = []
-
-            # Get bids from 'b' key (WebSocket uses short names)
-            for item in data.get("b", []):
-                if isinstance(item, list | tuple) and len(item) >= 2:
-                    bids.append([str(item[0]), str(item[1])])
-
-            # Get asks from 'a' key
-            for item in data.get("a", []):
-                if isinstance(item, list | tuple) and len(item) >= 2:
-                    asks.append([str(item[0]), str(item[1])])
-
-            # Log first update to verify data structure
-            if bids or asks:
-                if bids:
-                    logger.debug(f"Depth bids sample: {bids[0] if bids else 'none'}")
-                if asks:
-                    logger.debug(f"Depth asks sample: {asks[0] if asks else 'none'}")
-                for callback in self._callbacks["depth"]:
-                    callback(bids, asks)
-
-        except Exception as e:
-            logger.error(f"Error handling depth: {e}")
-
-    def _handle_partial_depth(self, message: Any) -> None:
-        """Handle incoming partial depth (orderbook) data.
-
-        Partial depth stream sends complete top N levels, not diffs.
-        This simplifies orderbook management since we don't need to track state.
-        """
-        try:
-            # Convert Pydantic model to dict first
-            data = message.to_dict() if hasattr(message, "to_dict") else message
-
-            bids = []
-            asks = []
-
-            # Parse bids from 'b' or 'bids' key
-            bids_data = data.get("b") or data.get("bids", [])
-            for item in bids_data:
-                # Handle different formats
-                if hasattr(item, "root"):
-                    # Pydantic model with root attribute
-                    price, qty = item.root
-                    bids.append([str(price), str(qty)])
-                elif isinstance(item, list | tuple) and len(item) >= 2:
-                    bids.append([str(item[0]), str(item[1])])
-
-            # Parse asks from 'a' or 'asks' key
-            asks_data = data.get("a") or data.get("asks", [])
-            for item in asks_data:
-                if hasattr(item, "root"):
-                    price, qty = item.root
-                    asks.append([str(price), str(qty)])
-                elif isinstance(item, list | tuple) and len(item) >= 2:
-                    asks.append([str(item[0]), str(item[1])])
-
-            # Validate orderbook integrity
-            if bids and asks:
-                best_bid = float(bids[0][0]) if bids else 0
-                best_ask = float(asks[0][0]) if asks else 0
-                if best_bid > 0 and best_ask > 0 and best_bid >= best_ask:
-                    logger.warning(
-                        f"Invalid orderbook: best_bid({best_bid}) >= best_ask({best_ask}), skipping"
-                    )
-                    return
-
-                logger.debug(
-                    f"Partial depth: {len(bids)} bids, {len(asks)} asks, "
-                    f"best_bid={bids[0][0]}, best_ask={asks[0][0]}"
-                )
-
-            # Notify callbacks with full orderbook data
-            for callback in self._callbacks["depth"]:
-                callback(bids, asks)
-
-        except Exception as e:
-            logger.error(f"Error handling partial depth: {e}")
-
     @property
     def is_connected(self) -> bool:
         """Check if WebSocket is connected."""
@@ -308,6 +289,20 @@ class BinanceStreamClient:
         """Close WebSocket connection."""
         self._running = False
         self._connected = False
+
+        # Cancel depth stream task
+        if self._depth_task:
+            self._depth_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._depth_task
+            self._depth_task = None
+
+        # Close raw depth WebSocket
+        if self._depth_ws:
+            with contextlib.suppress(Exception):
+                await self._depth_ws.close()
+            self._depth_ws = None
+
         if self._connection:
             try:
                 await self._connection.close_connection(close_session=True)
