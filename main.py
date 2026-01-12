@@ -904,21 +904,24 @@ class TradingBot:
         Args:
             signal: Signal to process
         """
-        # Only process actionable signals
-        if not signal.is_actionable:
-            self._logger.debug(f"Signal not actionable: {signal.signal_type.value}")
-            return
+        try:
+            # Only process actionable signals
+            if not signal.is_actionable:
+                self._logger.debug(f"Signal not actionable: {signal.signal_type.value}")
+                return
 
-        # Check if we should process this signal based on current state
-        if self._state_machine.is_idle:
-            # IDLE state: process entry signals normally
-            await self._process_entry_signal(signal)
-        elif self._state_machine.has_position:
-            # IN_POSITION state: check if signal suggests closing/reversing
-            await self._process_position_signal(signal)
-        else:
-            # Other states (ANALYZING, WAITING_ENTRY, etc.): skip
-            self._logger.debug(f"Busy state, skipping signal: {signal.signal_type.value}")
+            # Check if we should process this signal based on current state
+            if self._state_machine.is_idle:
+                # IDLE state: process entry signals normally
+                await self._process_entry_signal(signal)
+            elif self._state_machine.has_position:
+                # IN_POSITION state: check if signal suggests closing/reversing
+                await self._process_position_signal(signal)
+            else:
+                # Other states (ANALYZING, WAITING_ENTRY, etc.): skip
+                self._logger.debug(f"Busy state, skipping signal: {signal.signal_type.value}")
+        except Exception as e:
+            self._logger.error(f"Error processing signal {signal.signal_type.value}: {e}")
 
     async def _process_position_signal(self, signal: Signal) -> None:
         """Process a signal while in position.
