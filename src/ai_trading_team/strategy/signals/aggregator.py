@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from ai_trading_team.core.data_pool import DataPool
+from ai_trading_team.indicators.volatility import VolatilityAnalyzer
 from ai_trading_team.strategy.signals.base import SignalSource
 from ai_trading_team.strategy.signals.bollinger_breakout import BollingerBreakoutSignal
 from ai_trading_team.strategy.signals.funding_rate import FundingRateSignal
@@ -108,6 +109,13 @@ class SignalAggregator:
         self._is_ready = False
         self._required_kline_intervals = ["15m", "1h", "4h"]
         self._min_klines_required = 60  # Need at least 60 klines for MA60
+
+        # Volatility analyzer for data completeness check
+        self._volatility_analyzer = VolatilityAnalyzer(
+            history_size=100,
+            min_samples=20,
+            volatility_multiplier=0.8,
+        )
 
         # Initialize default signal sources
         self._init_default_sources()
@@ -236,11 +244,26 @@ class SignalAggregator:
             logger.debug("Data not ready: no ticker data")
             return False
 
+        # Update volatility analyzer with ATR data
+        atr_15m = self._calculate_atr_pct(snapshot.klines.get("15m", []), 14)
+        atr_1h = self._calculate_atr_pct(snapshot.klines.get("1h", []), 14)
+        atr_4h = self._calculate_atr_pct(snapshot.klines.get("4h", []), 14)
+        self._volatility_analyzer.update(atr_15m, atr_1h, atr_4h)
+
+        # Check volatility data completeness
+        sample_count = len(self._volatility_analyzer._composite_history)
+        min_samples = self._volatility_analyzer._min_samples
+        if sample_count < min_samples:
+            logger.debug(
+                f"Data not ready: volatility samples {sample_count}/{min_samples}"
+            )
+            return False
+
         # All checks passed
         self._is_ready = True
         logger.info(
             f"Signal aggregator ready: all {len(self._required_kline_intervals)} "
-            f"timeframes have sufficient data"
+            f"timeframes have sufficient data, volatility samples={sample_count}"
         )
         return True
 
