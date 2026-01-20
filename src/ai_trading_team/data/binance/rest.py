@@ -294,6 +294,42 @@ class BinanceRestClient:
             timestamp=datetime.now(),
         )
 
+    async def get_open_interest_history(
+        self,
+        symbol: str,
+        period: str = "15m",
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        """Get open interest history (latest 1 month).
+
+        Args:
+            symbol: Trading pair
+            period: Time period (5m, 15m, 30m, 1h, 2h, 4h, 6h, 12h, 1d)
+            limit: Number of points (max 1000)
+
+        Returns:
+            List of open interest history records
+        """
+        client = self._get_client()
+
+        def _fetch() -> list[dict[str, Any]]:
+            response = client.rest_api.open_interest_statistics(
+                symbol=symbol,
+                period=period,
+                limit=limit,
+            )
+            data = response.data()
+            if isinstance(data, list):
+                items: list[dict[str, Any]] = []
+                for item in data:
+                    item_dict = item.to_dict() if hasattr(item, "to_dict") else item
+                    if isinstance(item_dict, dict):
+                        items.append(item_dict)
+                return items
+            return []
+
+        return await asyncio.to_thread(_fetch)
+
     async def get_long_short_ratio(self, symbol: str, period: str = "5m") -> LongShortRatio:
         """Get long/short ratio.
 

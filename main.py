@@ -1207,6 +1207,12 @@ class TradingBot:
                 "Volatility backfill complete: %d samples loaded",
                 backfill_samples,
             )
+        oi_samples = await self._backfill_open_interest()
+        if oi_samples:
+            self._logger.info(
+                "Open interest backfill complete: %d samples loaded",
+                oi_samples,
+            )
 
         # Start background tasks
         asyncio.create_task(self._market_metrics_loop())
@@ -1331,6 +1337,22 @@ class TradingBot:
             f"has_position={self._state_machine.has_position}"
         )
 
+    async def _backfill_open_interest(self) -> int:
+        rest_client = self._data_manager._rest_client
+        history: list[dict[str, Any]] = []
+        for period in ("15m", "1h", "4h"):
+            try:
+                history.extend(
+                    await rest_client.get_open_interest_history(
+                        self._binance_symbol,
+                        period=period,
+                        limit=1000,
+                    )
+                )
+            except Exception as e:
+                self._logger.debug(f"Failed to backfill OI ({period}): {e}")
+        return self._agent.backfill_open_interest(history)
+
     async def _state_save_loop(self) -> None:
         """Periodically save state to disk."""
         while self._running:
@@ -1407,12 +1429,12 @@ class TradingBot:
                 # Fetch open interest
                 try:
                     oi = await rest_client.get_open_interest(self._binance_symbol)
-                    self._data_pool.update_open_interest(
-                        {
-                            "open_interest": float(oi.open_interest),
-                            "timestamp": oi.timestamp.isoformat(),
-                        }
-                    )
+                    oi_payload = {
+                        "open_interest": float(oi.open_interest),
+                        "timestamp": oi.timestamp.isoformat(),
+                    }
+                    self._data_pool.update_open_interest(oi_payload)
+                    self._agent.update_open_interest(oi_payload)
                 except Exception as e:
                     self._logger.debug(f"Failed to fetch OI: {e}")
 

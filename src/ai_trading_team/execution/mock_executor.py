@@ -267,6 +267,8 @@ class MockExecutor:
             order.avg_fill_price = exec_price
 
         self._order_history.append(order)
+        if len(self._order_history) > 1000:
+            self._order_history = self._order_history[-1000:]
 
     async def _close_position_internal(self, size: Decimal | None = None) -> Decimal:
         """Close position and return realized P&L."""

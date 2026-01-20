@@ -104,6 +104,20 @@ class LongShortRatioSignal(SignalSource):
 
         current_ratio = ls_data.get("longShortRatio")
         if current_ratio is None:
+            current_ratio = ls_data.get("long_short_ratio")
+        if current_ratio is None:
+            long_ratio = ls_data.get("long_ratio")
+            short_ratio = ls_data.get("short_ratio")
+            if long_ratio is not None and short_ratio is not None:
+                try:
+                    long_ratio_f = float(long_ratio)
+                    short_ratio_f = float(short_ratio)
+                except (TypeError, ValueError):
+                    long_ratio_f = 0.0
+                    short_ratio_f = 0.0
+                if short_ratio_f > 0:
+                    current_ratio = long_ratio_f / short_ratio_f
+        if current_ratio is None:
             # Try alternative key
             long_account = ls_data.get("longAccount", 0)
             short_account = ls_data.get("shortAccount", 0)

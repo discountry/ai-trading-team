@@ -53,7 +53,7 @@ class SignalWindow:
     # Weights for different signal types (for confluence scoring)
     weights: dict[str, float] = field(
         default_factory=lambda: {
-            "ma_crossover": 1.5,  # MA signals weighted higher
+            "ma_crossover_60": 1.5,  # MA signals weighted higher
             "macd_crossover": 1.5,
             "rsi_extreme": 1.2,
             "bollinger_breakout": 1.2,
@@ -186,10 +186,11 @@ class SignalAggregator:
             )
         )
 
-        # Liquidation >1M USD
+        # Liquidation >=100k USD (major at >=1M)
         self.add_source(
             LiquidationSignal(
-                min_value_usd=1_000_000.0,
+                min_value_usd=100_000.0,
+                major_value_usd=1_000_000.0,
             )
         )
 

@@ -186,6 +186,7 @@ class BinanceDataManager:
         self._stream_client.on_ticker(self._on_ticker)
         self._stream_client.on_kline(self._on_kline)
         self._stream_client.on_depth(self._on_depth)
+        self._stream_client.on_liquidation(self._on_liquidation)
 
         # Connect to WebSocket streams
         await self._stream_client.connect(symbol, self._kline_intervals)
@@ -366,6 +367,18 @@ class BinanceDataManager:
             self._data_pool.update_orderbook(orderbook)
         else:
             logger.warning("OrderBookManager returned empty orderbook after set_snapshot")
+
+    def _on_liquidation(self, event: dict[str, Any]) -> None:
+        """Handle liquidation event update from WebSocket."""
+        if not isinstance(event, dict):
+            return
+        symbol = event.get("symbol") or event.get("s")
+        order = event.get("o")
+        if not symbol and isinstance(order, dict):
+            symbol = order.get("s")
+        if symbol and str(symbol).upper() != self._symbol.upper():
+            return
+        self._data_pool.add_liquidation(event)
 
     @staticmethod
     def _ticker_to_dict(ticker: Ticker) -> dict[str, Any]:

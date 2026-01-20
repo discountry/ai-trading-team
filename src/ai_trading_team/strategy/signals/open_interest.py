@@ -108,6 +108,8 @@ class OpenInterestSignal(SignalSource):
         if current_oi is None:
             current_oi = oi_data.get("oi")
         if current_oi is None:
+            current_oi = oi_data.get("open_interest")
+        if current_oi is None:
             return None
 
         current_oi = float(current_oi)

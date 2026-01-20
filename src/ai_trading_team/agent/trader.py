@@ -5,7 +5,8 @@ import contextlib
 import json
 import logging
 import time
-from datetime import datetime
+from collections import deque
+from datetime import datetime, timedelta
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -48,6 +49,10 @@ class LangChainTradingAgent:
             min_samples=self._volatility_min_samples,
             volatility_multiplier=self._volatility_multiplier,  # Threshold = 80% of average
         )
+        self._oi_history: deque[tuple[datetime, float]] = deque(maxlen=1000)
+        self._oi_windows: tuple[tuple[str, int], ...] = (("15m", 15), ("1h", 60), ("4h", 240))
+        self._oi_series_points = 5
+        self._oi_min_interval_seconds = 120.0
 
     def _load_prompts(self) -> dict[str, str]:
         """Load prompts based on config.trading.prompt_style.
@@ -419,6 +424,8 @@ class LangChainTradingAgent:
             short_r = ls.get("short_ratio", 0.5)
             ls_ratio_str = f"Long: {float(long_r) * 100:.1f}%, Short: {float(short_r) * 100:.1f}%"
 
+        open_interest_str, open_interest_series_str = self._format_open_interest_context(snapshot)
+
         # Format position
         position_str = "无持仓"
         if snapshot.position:
@@ -521,6 +528,8 @@ class LangChainTradingAgent:
             "volatility_analysis": volatility_analysis,
             "funding_rate": funding_str,
             "long_short_ratio": ls_ratio_str,
+            "open_interest": open_interest_str,
+            "open_interest_series": open_interest_series_str,
             "position": position_str,
             "orders": orders_str,
             "account": account_str,
@@ -574,6 +583,36 @@ class LangChainTradingAgent:
         _, atr_15m, atr_1h, atr_4h = self._extract_atr_values(snapshot)
         self._volatility_analyzer.update(atr_15m, atr_1h, atr_4h)
 
+    def update_open_interest(self, oi_data: dict[str, Any] | None) -> None:
+        value, ts = self._extract_open_interest(oi_data)
+        if value is None:
+            return
+        if ts is None:
+            ts = datetime.now()
+        if self._oi_history:
+            last_ts = self._oi_history[-1][0]
+            if (ts - last_ts).total_seconds() < self._oi_min_interval_seconds:
+                return
+        self._oi_history.append((ts, value))
+
+    def backfill_open_interest(self, history: list[dict[str, Any]]) -> int:
+        """Backfill open interest history with REST data."""
+        if not history:
+            return 0
+        entries: list[tuple[datetime, float]] = []
+        for item in history:
+            value, ts = self._extract_open_interest(item)
+            if value is None or ts is None:
+                continue
+            entries.append((ts, value))
+        if not entries:
+            return 0
+        entries.sort(key=lambda x: x[0])
+        self._oi_history.clear()
+        for ts, value in entries:
+            self._oi_history.append((ts, value))
+        return len(self._oi_history)
+
     def volatility_ready(self) -> bool:
         """Return True when volatility analyzer has enough samples."""
         return len(self._volatility_analyzer._composite_history) >= self._volatility_analyzer._min_samples
@@ -601,6 +640,79 @@ class LangChainTradingAgent:
             atr_1h = self._calculate_atr_pct(snapshot.klines.get("1h", []), 14)
             atr_4h = self._calculate_atr_pct(snapshot.klines.get("4h", []), 14)
         return atr_str, atr_15m, atr_1h, atr_4h
+
+    def _extract_open_interest(
+        self, oi_data: dict[str, Any] | None
+    ) -> tuple[float | None, datetime | None]:
+        if not oi_data:
+            return None, None
+        value = oi_data.get("open_interest")
+        if value is None:
+            value = oi_data.get("openInterest")
+        if value is None:
+            value = oi_data.get("sumOpenInterest")
+        if value is None:
+            value = oi_data.get("oi")
+        if value is None:
+            return None, None
+        try:
+            value_f = float(value)
+        except (TypeError, ValueError):
+            return None, None
+        if value_f <= 0:
+            return None, None
+        ts = self._parse_timestamp(oi_data.get("timestamp") or oi_data.get("time"))
+        return value_f, ts
+
+    def _parse_timestamp(self, value: Any) -> datetime | None:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, int | float):
+            return datetime.fromtimestamp(value / 1000 if value > 1e12 else value)
+        try:
+            return datetime.fromisoformat(str(value))
+        except (TypeError, ValueError):
+            return None
+
+    def _format_open_interest_context(self, snapshot: DataSnapshot) -> tuple[str, str]:
+        if snapshot.open_interest:
+            self.update_open_interest(snapshot.open_interest)
+        if not self._oi_history:
+            return "N/A", "N/A"
+        ts, value = self._oi_history[-1]
+        ts_str = ts.isoformat() if ts else ""
+        oi_str = f"{value:,.0f}"
+        if ts_str:
+            oi_str = f"{oi_str} ({ts_str})"
+        series = self._format_open_interest_series(ts, value)
+        return oi_str, series
+
+    def _format_open_interest_series(self, now_ts: datetime, current: float) -> str:
+        parts: list[str] = []
+        for label, minutes in self._oi_windows:
+            values: list[float | None] = [current]
+            for i in range(1, self._oi_series_points + 1):
+                cutoff = now_ts - timedelta(minutes=minutes * i)
+                values.append(self._find_oi_value(cutoff))
+            changes: list[str] = []
+            for i in range(self._oi_series_points):
+                latest = values[i]
+                prior = values[i + 1]
+                if latest is None or prior is None or prior <= 0:
+                    changes.append("N/A")
+                    continue
+                change_pct = ((latest - prior) / prior) * 100
+                changes.append(f"{change_pct:+.2f}%")
+            parts.append(f"{label}: {', '.join(changes)}")
+        return " | ".join(parts) if parts else "N/A"
+
+    def _find_oi_value(self, cutoff: datetime) -> float | None:
+        for ts, value in reversed(self._oi_history):
+            if ts <= cutoff:
+                return value
+        return None
 
     def _format_indicators(self, indicators: dict[str, Any]) -> str:
         """Format indicators dict for AI context.
@@ -779,6 +891,8 @@ class LangChainTradingAgent:
         if snapshot.indicators:
             indicators_str = self._format_indicators(snapshot.indicators)
 
+        open_interest_str, open_interest_series_str = self._format_open_interest_context(snapshot)
+
         # Build context for profit signal prompt
         context = {
             "position": position_str,
@@ -789,6 +903,8 @@ class LangChainTradingAgent:
             "entry_price": profit_data.get("entry_price", 0),
             "market_summary": market_summary,
             "indicators": indicators_str,
+            "open_interest": open_interest_str,
+            "open_interest_series": open_interest_series_str,
             "symbol": self._symbol,
         }
 

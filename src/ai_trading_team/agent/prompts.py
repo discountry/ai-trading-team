@@ -70,6 +70,8 @@ K线: {klines}
 ATR: {atr}
 资金费率: {funding_rate}
 多空比: {long_short_ratio}
+OI: {open_interest}
+OI变化序列(15m/1h/4h): {open_interest_series}
 
 ## 动态波动率分析
 {volatility_analysis}
@@ -114,6 +116,8 @@ PROFIT_SIGNAL_PROMPT = """盈利中，可移动止损或平仓。
 ## 市场状态
 {market_summary}
 {indicators}
+OI: {open_interest}
+OI变化序列(15m/1h/4h): {open_interest_series}
 
 ## 操作限制
 - 正向波动（杠杆折算）= 盈利% / 20

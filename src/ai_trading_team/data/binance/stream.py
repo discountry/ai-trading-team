@@ -46,6 +46,7 @@ class BinanceStreamClient:
             "kline": [],
             "trade": [],
             "depth": [],
+            "liquidation": [],
             "reconnect": [],  # Callback for reconnection events
         }
         # Reconnection state
@@ -89,6 +90,14 @@ class BinanceStreamClient:
             callback: Function to call with (bids, asks) updates
         """
         self._callbacks["depth"].append(callback)
+
+    def on_liquidation(self, callback: Callable[[dict[str, Any]], None]) -> None:
+        """Register liquidation callback.
+
+        Args:
+            callback: Function to call with liquidation event data
+        """
+        self._callbacks["liquidation"].append(callback)
 
     def on_reconnect(self, callback: Callable[[int], None]) -> None:
         """Register reconnection callback.
@@ -152,6 +161,16 @@ class BinanceStreamClient:
                 )
                 kline_stream.on("message", self._handle_kline)
                 logger.info(f"Subscribed to kline stream: {symbol_lower}@{interval}")
+
+            # Subscribe to liquidation stream
+            try:
+                liquidation_stream = await self._connection.liquidation_order_streams(
+                    symbol=symbol_lower,
+                )
+                liquidation_stream.on("message", self._handle_liquidation)
+                logger.info(f"Subscribed to liquidation stream: {symbol_lower}@forceOrder")
+            except Exception as e:
+                logger.warning(f"Failed to subscribe to liquidation stream: {e}")
 
             # Start raw depth WebSocket (bypass buggy SDK parsing)
             self._depth_task = asyncio.create_task(self._run_depth_stream(symbol_lower))
@@ -284,6 +303,20 @@ class BinanceStreamClient:
 
         except Exception as e:
             logger.error(f"Error handling kline: {e}")
+
+    def _handle_liquidation(self, message: Any) -> None:
+        """Handle incoming liquidation data."""
+        try:
+            data = message.to_dict() if hasattr(message, "to_dict") else message
+            event = data
+            if isinstance(data, dict) and isinstance(data.get("data"), dict):
+                event = data.get("data")
+            if not isinstance(event, dict):
+                return
+            for callback in self._callbacks["liquidation"]:
+                callback(event)
+        except Exception as e:
+            logger.error(f"Error handling liquidation: {e}")
 
     @property
     def is_connected(self) -> bool:

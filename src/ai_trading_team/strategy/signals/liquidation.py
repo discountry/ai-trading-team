@@ -1,6 +1,6 @@
 """Liquidation signal source.
 
-Detects when large liquidations (>1M USD) occur.
+Detects when large liquidations (>=100k / >=1M USD) occur.
 This is an event-based signal for detecting forced position closures.
 """
 
@@ -32,7 +32,7 @@ class LiquidationState:
 
 
 class LiquidationSignal(SignalSource):
-    """Detects large liquidation events (>1M USD).
+    """Detects large liquidation events (>=100k / >=1M USD).
 
     Large liquidations indicate:
     - Long liquidation: Forced selling pressure (can accelerate downtrend)
@@ -43,14 +43,16 @@ class LiquidationSignal(SignalSource):
 
     def __init__(
         self,
-        min_value_usd: float = 1_000_000.0,
+        min_value_usd: float = 100_000.0,
+        major_value_usd: float = 1_000_000.0,
         cooldown_seconds: int = 60,
         timeframes: list[Timeframe] | None = None,
     ) -> None:
         """Initialize liquidation signal source.
 
         Args:
-            min_value_usd: Minimum liquidation value in USD (default: 1M)
+            min_value_usd: Minimum liquidation value in USD (default: 100k)
+            major_value_usd: Major liquidation value in USD (default: 1M)
             cooldown_seconds: Minimum time between signals (default: 60s)
             timeframes: Timeframes to monitor (default: 1h only)
         """
@@ -58,11 +60,13 @@ class LiquidationSignal(SignalSource):
             name="liquidation",
             timeframes=timeframes or [Timeframe.H1],
         )
-        self._min_value = min_value_usd
+        self._minor_value = min_value_usd
+        self._major_value = max(major_value_usd, min_value_usd)
         self._cooldown = timedelta(seconds=cooldown_seconds)
 
         # Track last signal time to prevent spam
         self._last_signal_time: datetime | None = None
+        self._last_signal_tier: str | None = None
 
     def _compute_state(
         self,
@@ -100,10 +104,10 @@ class LiquidationSignal(SignalSource):
             # Get most recent large liquidation
             for event in reversed(liq_data):
                 value = self._get_liquidation_value(event)
-                if value >= self._min_value:
+                if value >= self._minor_value:
                     return LiquidationState(
                         last_liquidation_time=self._get_event_time(event),
-                        last_liquidation_side=event.get("side", event.get("S")),
+                        last_liquidation_side=self._get_event_side(event),
                         last_liquidation_value=value,
                     )
             return LiquidationState(
@@ -114,10 +118,10 @@ class LiquidationSignal(SignalSource):
         else:
             # Single event
             value = self._get_liquidation_value(liq_data)
-            if value >= self._min_value:
+            if value >= self._minor_value:
                 return LiquidationState(
                     last_liquidation_time=self._get_event_time(liq_data),
-                    last_liquidation_side=liq_data.get("side", liq_data.get("S")),
+                    last_liquidation_side=self._get_event_side(liq_data),
                     last_liquidation_value=value,
                 )
             return LiquidationState(
@@ -144,12 +148,29 @@ class LiquidationSignal(SignalSource):
         """Extract timestamp from liquidation event."""
         # Try different possible keys
         ts = event.get("T", event.get("time", event.get("timestamp")))
+        if ts is None:
+            order = event.get("o")
+            if isinstance(order, dict):
+                ts = order.get("T", order.get("time", order.get("timestamp")))
+        if ts is None:
+            ts = event.get("E")
         if ts:
             if isinstance(ts, int | float):
                 # Assume milliseconds
                 return datetime.fromtimestamp(ts / 1000 if ts > 1e12 else ts)
             return datetime.fromisoformat(str(ts))
         return datetime.now()
+
+    def _get_event_side(self, event: dict[str, Any]) -> str | None:
+        side = event.get("side", event.get("S"))
+        if side is not None:
+            return str(side)
+        order = event.get("o")
+        if isinstance(order, dict):
+            side = order.get("side", order.get("S"))
+            if side is not None:
+                return str(side)
+        return None
 
     def _detect_transition(
         self,
@@ -178,10 +199,15 @@ class LiquidationSignal(SignalSource):
         if new_state.last_liquidation_time is None:
             return None
 
+        value = new_state.last_liquidation_value
+        is_major = value >= self._major_value
+        tier = "major" if is_major else "minor"
+
         # Check cooldown
         now = datetime.now()
         if self._last_signal_time and now - self._last_signal_time < self._cooldown:
-            return None
+            if not is_major or self._last_signal_tier == "major":
+                return None
 
         # Check if this is a new liquidation (not already signaled)
         if (
@@ -190,8 +216,6 @@ class LiquidationSignal(SignalSource):
             and prev_state.last_liquidation_time == new_state.last_liquidation_time
         ):
             return None
-
-        self._last_signal_time = now
 
         signal: Signal | None = None
         side = (new_state.last_liquidation_side or "").upper()
@@ -202,13 +226,15 @@ class LiquidationSignal(SignalSource):
             signal = Signal(
                 signal_type=SignalType.LIQUIDATION_LONG,
                 direction=SignalDirection.BEARISH,
-                strength=SignalStrength.STRONG if value_m >= 5 else SignalStrength.MODERATE,
+                strength=SignalStrength.STRONG if is_major else SignalStrength.MODERATE,
                 timeframe=timeframe,
                 source=self._name,
                 data={
                     "side": "LONG",
                     "value_usd": new_state.last_liquidation_value,
                     "value_millions": value_m,
+                    "tier": tier,
+                    "threshold_usd": self._major_value if is_major else self._minor_value,
                 },
                 description=(
                     f"LONG Liquidation: ${value_m:.2f}M - Forced selling pressure (bearish)"
@@ -220,13 +246,15 @@ class LiquidationSignal(SignalSource):
             signal = Signal(
                 signal_type=SignalType.LIQUIDATION_SHORT,
                 direction=SignalDirection.BULLISH,
-                strength=SignalStrength.STRONG if value_m >= 5 else SignalStrength.MODERATE,
+                strength=SignalStrength.STRONG if is_major else SignalStrength.MODERATE,
                 timeframe=timeframe,
                 source=self._name,
                 data={
                     "side": "SHORT",
                     "value_usd": new_state.last_liquidation_value,
                     "value_millions": value_m,
+                    "tier": tier,
+                    "threshold_usd": self._major_value if is_major else self._minor_value,
                 },
                 description=(
                     f"SHORT Liquidation: ${value_m:.2f}M - Forced buying pressure (bullish)"
@@ -234,6 +262,8 @@ class LiquidationSignal(SignalSource):
             )
 
         if signal:
+            self._last_signal_time = now
+            self._last_signal_tier = tier
             logger.info(f"🎯 {signal.description}")
 
         return signal

@@ -201,9 +201,10 @@ class DataPool:
 
     def update_klines(self, interval: str, klines: list[dict[str, Any]]) -> None:
         """Update kline data for an interval."""
+        stored = klines[-1000:] if len(klines) > 1000 else klines
         with self._lock:
-            self._klines[interval] = klines
-        self._notify(EventType.KLINE_UPDATE, {"interval": interval, "klines": klines})
+            self._klines[interval] = stored
+        self._notify(EventType.KLINE_UPDATE, {"interval": interval, "klines": stored})
 
     def update_orderbook(self, orderbook: dict[str, Any]) -> None:
         """Update orderbook data."""
