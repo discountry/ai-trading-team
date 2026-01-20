@@ -40,10 +40,13 @@ class LangChainTradingAgent:
         self._llm = self._create_llm()
         self._prompts = self._load_prompts()
         # Dynamic volatility analyzer - adapts to each symbol's characteristics
+        self._volatility_history_size = 100
+        self._volatility_min_samples = 20
+        self._volatility_multiplier = 0.8
         self._volatility_analyzer = VolatilityAnalyzer(
-            history_size=100,
-            min_samples=20,
-            volatility_multiplier=0.8,  # Threshold = 80% of average
+            history_size=self._volatility_history_size,
+            min_samples=self._volatility_min_samples,
+            volatility_multiplier=self._volatility_multiplier,  # Threshold = 80% of average
         )
 
     def _load_prompts(self) -> dict[str, str]:
@@ -397,22 +400,7 @@ class LangChainTradingAgent:
             indicators_str = self._format_indicators(snapshot.indicators)
 
         # Format ATR (multi-timeframe) and update volatility analyzer
-        atr_str = "N/A"
-        atr_15m, atr_1h, atr_4h = None, None, None
-        if snapshot.indicators:
-            atr_str = self._format_atr(snapshot.indicators)
-            # Extract ATR values for volatility analyzer
-            atr_15m = snapshot.indicators.get("ATR_14_15m")
-            atr_1h = snapshot.indicators.get("ATR_14_1h")
-            atr_4h = snapshot.indicators.get("ATR_14_4h")
-        if atr_str == "N/A" and snapshot.klines:
-            atr_str = self._format_atr_from_klines(snapshot.klines)
-            # Calculate ATR from klines for volatility analyzer
-            atr_15m = self._calculate_atr_pct(snapshot.klines.get("15m", []), 14)
-            atr_1h = self._calculate_atr_pct(snapshot.klines.get("1h", []), 14)
-            atr_4h = self._calculate_atr_pct(snapshot.klines.get("4h", []), 14)
-
-        # Update volatility analyzer with latest ATR values
+        atr_str, atr_15m, atr_1h, atr_4h = self._extract_atr_values(snapshot)
         self._volatility_analyzer.update(atr_15m, atr_1h, atr_4h)
         volatility_analysis = self._volatility_analyzer.format_for_prompt()
 
@@ -539,6 +527,81 @@ class LangChainTradingAgent:
             "recent_operations": ops_str,
         }
 
+    def _reset_volatility_analyzer(self) -> None:
+        self._volatility_analyzer = VolatilityAnalyzer(
+            history_size=self._volatility_history_size,
+            min_samples=self._volatility_min_samples,
+            volatility_multiplier=self._volatility_multiplier,
+        )
+
+    def backfill_volatility(self, snapshot: DataSnapshot) -> int:
+        """Backfill volatility analyzer with historical kline ATR series."""
+        if not snapshot.klines:
+            return 0
+
+        series_by_tf: dict[str, list[tuple[datetime, float]]] = {}
+        for tf in ("15m", "1h", "4h"):
+            series = self._calculate_atr_series_pct(snapshot.klines.get(tf, []), 14)
+            if series:
+                series_by_tf[tf] = series
+
+        if not series_by_tf:
+            return 0
+
+        base_tf = "4h" if "4h" in series_by_tf else "1h" if "1h" in series_by_tf else "15m"
+
+        self._reset_volatility_analyzer()
+
+        base_series = series_by_tf[base_tf]
+        indices = {tf: 0 for tf in series_by_tf}
+        last_vals: dict[str, float | None] = {tf: None for tf in series_by_tf}
+
+        for ts, _val in base_series:
+            for tf, series in series_by_tf.items():
+                while indices[tf] < len(series) and series[indices[tf]][0] <= ts:
+                    last_vals[tf] = series[indices[tf]][1]
+                    indices[tf] += 1
+            self._volatility_analyzer.update(
+                last_vals.get("15m"),
+                last_vals.get("1h"),
+                last_vals.get("4h"),
+            )
+
+        return len(self._volatility_analyzer._composite_history)
+
+    def update_volatility(self, snapshot: DataSnapshot) -> None:
+        """Update volatility analyzer with latest ATR values."""
+        _, atr_15m, atr_1h, atr_4h = self._extract_atr_values(snapshot)
+        self._volatility_analyzer.update(atr_15m, atr_1h, atr_4h)
+
+    def volatility_ready(self) -> bool:
+        """Return True when volatility analyzer has enough samples."""
+        return len(self._volatility_analyzer._composite_history) >= self._volatility_analyzer._min_samples
+
+    def volatility_sample_status(self) -> tuple[int, int]:
+        """Return (sample_count, min_samples) for volatility analyzer."""
+        return (
+            len(self._volatility_analyzer._composite_history),
+            self._volatility_analyzer._min_samples,
+        )
+
+    def _extract_atr_values(
+        self, snapshot: DataSnapshot
+    ) -> tuple[str, float | None, float | None, float | None]:
+        atr_str = "N/A"
+        atr_15m, atr_1h, atr_4h = None, None, None
+        if snapshot.indicators:
+            atr_str = self._format_atr(snapshot.indicators)
+            atr_15m = snapshot.indicators.get("ATR_14_15m")
+            atr_1h = snapshot.indicators.get("ATR_14_1h")
+            atr_4h = snapshot.indicators.get("ATR_14_4h")
+        if atr_str == "N/A" and snapshot.klines:
+            atr_str = self._format_atr_from_klines(snapshot.klines)
+            atr_15m = self._calculate_atr_pct(snapshot.klines.get("15m", []), 14)
+            atr_1h = self._calculate_atr_pct(snapshot.klines.get("1h", []), 14)
+            atr_4h = self._calculate_atr_pct(snapshot.klines.get("4h", []), 14)
+        return atr_str, atr_15m, atr_1h, atr_4h
+
     def _format_indicators(self, indicators: dict[str, Any]) -> str:
         """Format indicators dict for AI context.
 
@@ -620,6 +683,47 @@ class LangChainTradingAgent:
         if last_close <= 0 or atr <= 0:
             return None
         return atr / last_close * 100
+
+    def _kline_timestamp(self, kline: dict[str, Any]) -> datetime | None:
+        ts = kline.get("close_time") or kline.get("open_time")
+        return ts if isinstance(ts, datetime) else None
+
+    def _calculate_atr_series_pct(
+        self,
+        klines: list[dict[str, Any]],
+        period: int,
+    ) -> list[tuple[datetime, float]]:
+        if len(klines) < period + 1:
+            return []
+
+        true_ranges: list[float] = []
+        atr_series: list[tuple[datetime, float]] = []
+        tr_sum = 0.0
+
+        for i in range(1, len(klines)):
+            high = float(klines[i].get("high", 0))
+            low = float(klines[i].get("low", 0))
+            prev_close = float(klines[i - 1].get("close", 0))
+            tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+            true_ranges.append(tr)
+            tr_sum += tr
+
+            if len(true_ranges) > period:
+                tr_sum -= true_ranges[-period - 1]
+
+            if len(true_ranges) < period:
+                continue
+
+            atr = tr_sum / period
+            last_close = float(klines[i].get("close", 0))
+            if last_close <= 0 or atr <= 0:
+                continue
+            ts = self._kline_timestamp(klines[i])
+            if ts is None:
+                continue
+            atr_series.append((ts, atr / last_close * 100))
+
+        return atr_series
 
     def _snapshot_to_dict(self, snapshot: DataSnapshot) -> dict[str, Any]:
         """Convert snapshot to serializable dict."""

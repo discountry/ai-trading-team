@@ -128,6 +128,8 @@ class TradingBot:
         self._telegram_lock = asyncio.Lock()
         self._last_position_notice: dict[str, Any] | None = None
         self._position_notify_ready = False
+        self._kline_update_counter = 0
+        self._kline_update_intervals: set[str] = set()
         self._data_pool.subscribe(self._handle_data_event)
 
         # Session manager for state persistence
@@ -472,16 +474,18 @@ class TradingBot:
 
         if not snapshot.klines:
             return None
-        klines_1m = snapshot.klines.get("1m", [])
-        if not klines_1m:
-            return None
-        last = klines_1m[-1]
-        high = self._safe_float(last.get("high")) if isinstance(last, dict) else None
-        low = self._safe_float(last.get("low")) if isinstance(last, dict) else None
-        close = self._safe_float(last.get("close")) if isinstance(last, dict) else None
-        if high is None or low is None or close is None or close <= 0:
-            return None
-        return (high - low) / close * 100
+        for interval in ("15m", "1h", "4h"):
+            klines = snapshot.klines.get(interval, [])
+            if not klines:
+                continue
+            last = klines[-1]
+            high = self._safe_float(last.get("high")) if isinstance(last, dict) else None
+            low = self._safe_float(last.get("low")) if isinstance(last, dict) else None
+            close = self._safe_float(last.get("close")) if isinstance(last, dict) else None
+            if high is None or low is None or close is None or close <= 0:
+                continue
+            return (high - low) / close * 100
+        return None
 
     def _should_block_entry(
         self,
@@ -578,6 +582,13 @@ class TradingBot:
             self._tui_app.add_risk_event(event_type, message)
 
     def _handle_data_event(self, event_type: EventType, data: Any) -> None:
+        if event_type == EventType.KLINE_UPDATE:
+            if isinstance(data, dict):
+                interval = data.get("interval")
+                if interval:
+                    self._kline_update_intervals.add(interval)
+            self._kline_update_counter += 1
+            return
         if event_type != EventType.POSITION_UPDATED:
             return
         if not self._telegram_notifier.enabled:
@@ -701,6 +712,23 @@ class TradingBot:
             "stop_loss_price": pos.stop_loss_price,
         }
         return snapshot
+
+    def _should_invoke_agent(self, snapshot: Any) -> bool:
+        self._agent.update_volatility(snapshot)
+        if self._agent.volatility_ready():
+            return True
+        sample_count, min_samples = self._agent.volatility_sample_status()
+        self._logger.info(
+            "AI skipped: volatility data incomplete (%d/%d)",
+            sample_count,
+            min_samples,
+        )
+        self._notify_agent_log(
+            "SKIP",
+            "Data incomplete",
+            f"volatility {sample_count}/{min_samples}",
+        )
+        return False
 
     def _suppress_signals_by_entry_fee(
         self,
@@ -1159,7 +1187,11 @@ class TradingBot:
 
         # Start data collection from Binance with multiple timeframes
         # Note: data_manager.start() calls initialize() which fetches all required timeframes
-        await self._data_manager.start(self._binance_symbol, kline_interval="1m")
+        await self._data_manager.start(
+            self._binance_symbol,
+            kline_interval="15m",
+            kline_intervals=["15m", "1h", "4h"],
+        )
 
         # Wait for data to be ready before proceeding
         if not self._data_manager.is_data_ready:
@@ -1167,6 +1199,14 @@ class TradingBot:
             return
 
         self._logger.info(f"Data ready: all timeframes loaded for {self._binance_symbol}")
+
+        snapshot = self._data_pool.get_snapshot()
+        backfill_samples = self._agent.backfill_volatility(snapshot)
+        if backfill_samples:
+            self._logger.info(
+                "Volatility backfill complete: %d samples loaded",
+                backfill_samples,
+            )
 
         # Start background tasks
         asyncio.create_task(self._market_metrics_loop())
@@ -1403,6 +1443,7 @@ class TradingBot:
             if snapshot.klines and snapshot.ticker:
                 # Trigger readiness check
                 self._signal_aggregator.update()
+                self._agent.update_volatility(snapshot)
             if self._signal_aggregator.is_ready:
                 self._logger.info("Signal aggregator ready - starting signal processing")
                 break
@@ -1411,20 +1452,17 @@ class TradingBot:
         if not self._running:
             return
 
-        # Track last kline update times to detect new data
-        last_kline_counts: dict[str, int] = {}
-
         # Initialize last_refresh with current time to prevent immediate refresh
         current_time = asyncio.get_event_loop().time()
 
         # Refresh klines periodically for each timeframe
         timeframe_intervals = {
-            "5m": 60,  # Check 5m klines every 60s
             "15m": 120,  # Check 15m klines every 2min
             "1h": 300,  # Check 1h klines every 5min
             "4h": 600,  # Check 4h klines every 10min
         }
         last_refresh: dict[str, float] = {tf: current_time for tf in timeframe_intervals}
+        last_kline_counter = self._kline_update_counter
 
         while self._running:
             try:
@@ -1435,31 +1473,19 @@ class TradingBot:
                     if current_time - last_refresh[interval] >= refresh_interval:
                         last_refresh[interval] = current_time
                         await self._refresh_klines(interval)
+                if self._kline_update_counter != last_kline_counter:
+                    last_kline_counter = self._kline_update_counter
+                    intervals = set(self._kline_update_intervals)
+                    self._kline_update_intervals.clear()
 
-                        # Update signals for this timeframe
+                    snapshot = self._data_pool.get_snapshot()
+                    has_timeframe_updates = False
+                    for interval in intervals:
                         timeframe = self._interval_to_timeframe(interval)
-                        if timeframe:
-                            signals = self._signal_aggregator.update(timeframe)
-                            if signals:
-                                for signal in signals:
-                                    self._logger.info(
-                                        "Signal queued: %s %s %s %s",
-                                        signal.signal_type.value,
-                                        signal.timeframe.value,
-                                        signal.strength.value,
-                                        signal.direction.value,
-                                    )
-                                self._queue_signals(signals)
-
-                # Also check for signals when 1m data updates (from WebSocket)
-                snapshot = self._data_pool.get_snapshot()
-                if snapshot.klines:
-                    klines_1m = snapshot.klines.get("1m", [])
-                    current_count = len(klines_1m)
-                    if current_count != last_kline_counts.get("1m", 0):
-                        last_kline_counts["1m"] = current_count
-                        # Update all signal sources with latest data
-                        signals = self._signal_aggregator.update()
+                        if not timeframe:
+                            continue
+                        has_timeframe_updates = True
+                        signals = self._signal_aggregator.update(timeframe)
                         if signals:
                             signals = self._suppress_signals_by_entry_fee(snapshot, signals)
                             if signals:
@@ -1473,13 +1499,15 @@ class TradingBot:
                                     )
                                 self._queue_signals(signals)
 
-                        # Update indicators in data pool for AI context
+                    if has_timeframe_updates:
                         self._signal_aggregator.update_indicators()
+                        snapshot = self._data_pool.get_snapshot()
+                        self._agent.update_volatility(snapshot)
 
             except Exception as e:
                 self._logger.error(f"Error in signal update loop: {e}")
 
-            await asyncio.sleep(5)  # Check every 5 seconds
+            await asyncio.sleep(1)  # Check every second for near-real-time updates
 
     async def _refresh_klines(self, interval: str) -> None:
         """Refresh klines for a specific interval.
@@ -1810,7 +1838,6 @@ class TradingBot:
             action: RiskAction with move_stop_loss type
         """
         self._logger.info(f"Processing profit threshold signal: {action.reason}")
-        self._notify_agent_log("PROFIT", action.reason[:50], "Asking AI for stop loss")
 
         # Get current snapshot and position
         snapshot = self._data_pool.get_snapshot()
@@ -1819,6 +1846,10 @@ class TradingBot:
         if not position:
             self._logger.warning("No position found for profit signal")
             return
+        if not self._should_invoke_agent(snapshot):
+            return
+
+        self._notify_agent_log("PROFIT", action.reason[:50], "Asking AI for stop loss")
 
         # Build profit data for AI
         profit_data = {
@@ -2366,6 +2397,8 @@ class TradingBot:
 
         # Get market snapshot
         snapshot = self._data_pool.get_snapshot()
+        if not self._should_invoke_agent(snapshot):
+            return
 
         # Build context for AI to decide whether to close/hold
         from ai_trading_team.core.signal_queue import (
@@ -2819,8 +2852,6 @@ class TradingBot:
         # Notify TUI about the signal
         self._notify_signal(signal.signal_type.value, signal.description)
 
-        self._logger.info("Calling AI agent for trading decision...")
-
         # Transition to analyzing state
         self._state_machine.transition(
             StateTransition.ENTRY_SIGNAL,
@@ -2830,6 +2861,9 @@ class TradingBot:
         # Get market snapshot
         snapshot = self._data_pool.get_snapshot()
         snapshot = self._ensure_snapshot_position(snapshot)
+        if not self._should_invoke_agent(snapshot):
+            self._state_machine.transition(StateTransition.AGENT_OBSERVE)
+            return
 
         # Convert Signal to StrategySignal format for agent
         from ai_trading_team.core.signal_queue import (
@@ -2851,6 +2885,7 @@ class TradingBot:
         )
 
         # Get agent decision
+        self._logger.info("Calling AI agent for trading decision...")
         decision = await self._agent.process_signal(strategy_signal, snapshot)
         self._logger.info(
             f"Agent decision: {decision.command.action.value} - {decision.command.reason[:100]}"

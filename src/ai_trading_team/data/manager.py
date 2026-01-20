@@ -152,19 +152,31 @@ class BinanceDataManager:
         self._stream_client = BinanceStreamClient()
         self._running = False
         self._symbol = ""
-        self._kline_interval = "1m"
+        self._kline_intervals: list[str] = ["1m"]
         self._data_ready = False
         self._orderbook_manager = OrderBookManager(max_levels=10)
 
-    async def start(self, symbol: str, kline_interval: str = "1m") -> None:
+    async def start(
+        self,
+        symbol: str,
+        kline_interval: str = "1m",
+        kline_intervals: list[str] | None = None,
+    ) -> None:
         """Start data collection for a symbol.
 
         Args:
             symbol: Trading pair (e.g., "BTCUSDT")
-            kline_interval: Kline interval for streaming (e.g., "1m", "5m")
+            kline_interval: Primary Kline interval for streaming (e.g., "15m", "1h")
+            kline_intervals: Optional list of intervals to subscribe via WebSocket
         """
         self._symbol = symbol
-        self._kline_interval = kline_interval
+        if kline_intervals is None:
+            intervals = [kline_interval]
+        else:
+            intervals = list(kline_intervals)
+            if kline_interval not in intervals:
+                intervals.insert(0, kline_interval)
+        self._kline_intervals = list(dict.fromkeys(intervals))
         self._running = True
 
         # Initialize historical data first
@@ -176,7 +188,7 @@ class BinanceDataManager:
         self._stream_client.on_depth(self._on_depth)
 
         # Connect to WebSocket streams
-        await self._stream_client.connect(symbol, kline_interval)
+        await self._stream_client.connect(symbol, self._kline_intervals)
         logger.info(f"Started data collection for {symbol}")
 
     async def stop(self) -> None:
@@ -188,7 +200,7 @@ class BinanceDataManager:
     async def initialize(self, symbol: str) -> None:
         """Initialize historical data via REST API.
 
-        Fetches klines for all required timeframes (5m, 15m, 1h, 4h)
+        Fetches klines for all required timeframes (15m, 1h, 4h)
         to ensure signal system has sufficient data.
 
         Args:
@@ -220,14 +232,16 @@ class BinanceDataManager:
                 self._data_pool.update_klines(interval, kline_dicts)
                 logger.info(f"Initialized {len(klines)} klines for {symbol} {interval}")
 
-            # Also fetch the streaming interval if different
-            if self._kline_interval not in self.REQUIRED_INTERVALS:
+            # Also fetch any streaming intervals not in required list
+            for interval in self._kline_intervals:
+                if interval in self.REQUIRED_INTERVALS:
+                    continue
                 klines = await self._rest_client.get_klines(
-                    symbol, self._kline_interval, limit=self.MIN_KLINES_PER_INTERVAL
+                    symbol, interval, limit=self.MIN_KLINES_PER_INTERVAL
                 )
                 kline_dicts = [self._kline_to_dict(k) for k in klines]
-                self._data_pool.update_klines(self._kline_interval, kline_dicts)
-                logger.info(f"Initialized {len(klines)} klines for {symbol} {self._kline_interval}")
+                self._data_pool.update_klines(interval, kline_dicts)
+                logger.info(f"Initialized {len(klines)} klines for {symbol} {interval}")
 
             # Fetch extended market data
             await self._fetch_extended_data(symbol)

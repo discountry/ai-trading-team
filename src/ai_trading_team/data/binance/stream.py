@@ -52,7 +52,7 @@ class BinanceStreamClient:
         self._reconnect_delay = self.MIN_RECONNECT_DELAY
         self._reconnect_task: asyncio.Task | None = None
         self._symbol: str | None = None
-        self._kline_interval: str = "1m"
+        self._kline_intervals: list[str] = ["1m"]
         # Raw depth WebSocket (bypass buggy SDK parsing)
         self._depth_ws: Any = None
         self._depth_task: asyncio.Task | None = None
@@ -110,16 +110,22 @@ class BinanceStreamClient:
             except Exception as e:
                 logger.error(f"Error in reconnect callback: {e}")
 
-    async def connect(self, symbol: str, kline_interval: str = "1m") -> None:
+    async def connect(self, symbol: str, kline_intervals: list[str] | str = "1m") -> None:
         """Connect to WebSocket streams.
 
         Args:
             symbol: Trading pair (e.g., "btcusdt")
-            kline_interval: K-line interval (e.g., "1m", "5m")
+            kline_intervals: K-line interval(s) (e.g., "1m", ["1m", "15m"])
         """
         # Store connection parameters for reconnection
         self._symbol = symbol
-        self._kline_interval = kline_interval
+        if isinstance(kline_intervals, str):
+            intervals = [kline_intervals]
+        else:
+            intervals = list(kline_intervals)
+        if not intervals:
+            intervals = ["1m"]
+        self._kline_intervals = list(dict.fromkeys(intervals))
 
         client = self._get_client()
         self._running = True
@@ -138,13 +144,14 @@ class BinanceStreamClient:
             ticker_stream.on("message", self._handle_ticker)
             logger.info(f"Subscribed to ticker stream: {symbol_lower}")
 
-            # Subscribe to kline stream
-            kline_stream = await self._connection.kline_candlestick_streams(
-                symbol=symbol_lower,
-                interval=kline_interval,
-            )
-            kline_stream.on("message", self._handle_kline)
-            logger.info(f"Subscribed to kline stream: {symbol_lower}@{kline_interval}")
+            # Subscribe to kline streams
+            for interval in self._kline_intervals:
+                kline_stream = await self._connection.kline_candlestick_streams(
+                    symbol=symbol_lower,
+                    interval=interval,
+                )
+                kline_stream.on("message", self._handle_kline)
+                logger.info(f"Subscribed to kline stream: {symbol_lower}@{interval}")
 
             # Start raw depth WebSocket (bypass buggy SDK parsing)
             self._depth_task = asyncio.create_task(self._run_depth_stream(symbol_lower))
@@ -332,7 +339,7 @@ class BinanceStreamClient:
                 )
 
                 try:
-                    await self.connect(self._symbol, self._kline_interval)
+                    await self.connect(self._symbol, self._kline_intervals)
                     reconnect_attempt = 0  # Reset on success
                     logger.info("WebSocket reconnected successfully")
                 except Exception as e:
@@ -369,7 +376,7 @@ class BinanceStreamClient:
             )
 
             try:
-                await self.connect(self._symbol, self._kline_interval)
+                await self.connect(self._symbol, self._kline_intervals)
                 logger.info("Reconnected successfully")
             except Exception as e:
                 logger.error(f"Reconnection attempt {reconnect_attempt} failed: {e}")
