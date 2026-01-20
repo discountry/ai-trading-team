@@ -227,13 +227,15 @@ class TradingBot:
         self._queue_drop_log_interval = 30.0
         self._last_signal_suppress_log = 0.0
         self._signal_suppress_log_interval = 30.0
-        self._maker_fee_rate = 0.0002
-        self._taker_fee_rate = 0.0008
-        self._fee_round_trip_pct = float(self._taker_fee_rate * 2 * 100)
+        self._maker_fee_rate = 0.0004  # 0.04%
+        self._taker_fee_rate = 0.0001  # 0.01%
+        # 往返手续费：Taker开仓 + Maker平仓 = 0.01% + 0.04% = 0.05%
+        self._fee_round_trip_pct = float((self._taker_fee_rate + self._maker_fee_rate) * 100)
         self._min_hold_seconds = 180.0
+        # 最低入场波动要求：往返手续费 × 4倍
+        self._min_entry_move_pct = self._fee_round_trip_pct * 4.0
         self._min_trade_move_pct = self._fee_round_trip_pct * 2.0
-        self._min_entry_move_pct = max(self._min_trade_move_pct * 2.0, 0.2)
-        self._min_close_move_pct = max(self._min_entry_move_pct, 0.2)
+        self._min_close_move_pct = self._min_entry_move_pct
         self._min_flip_move_pct = self._fee_round_trip_pct * 2.0
         self._last_closed_side: Side | None = None
         self._last_closed_price: float | None = None
