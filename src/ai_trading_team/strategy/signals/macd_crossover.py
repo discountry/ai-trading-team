@@ -68,6 +68,7 @@ class MACDCrossoverSignal(SignalSource):
         super().__init__(
             name="macd_crossover",
             timeframes=timeframes or ALL_TIMEFRAMES,
+            candle_gated=True,
         )
         self._fast = fast_period
         self._slow = slow_period
@@ -158,7 +159,7 @@ class MACDCrossoverSignal(SignalSource):
         """
         # Try to get MACD from indicators first
         indicators = snapshot.indicators or {}
-        macd_key = f"MACD_{self._fast}_{self._slow}_{self._signal}"
+        macd_key = f"MACD_{self._fast}_{self._slow}_{self._signal}_{timeframe.value}"
 
         macd_data = indicators.get(macd_key)
         if macd_data and isinstance(macd_data, dict):

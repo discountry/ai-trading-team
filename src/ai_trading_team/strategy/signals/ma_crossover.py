@@ -66,6 +66,7 @@ class MACrossoverSignal(SignalSource):
         super().__init__(
             name=f"ma_crossover_{ma_period}",
             timeframes=timeframes or [Timeframe.H1],
+            candle_gated=True,
         )
         self._ma_period = ma_period
         self._threshold_percent = threshold_percent

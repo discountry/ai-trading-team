@@ -509,49 +509,73 @@ class SignalAggregator:
         if not self._check_data_ready(snapshot):
             return
 
-        # Compute RSI, MA, MACD, BB for primary timeframe (H1)
-        h1_klines = snapshot.klines.get("1h", []) if snapshot.klines else []
-        if len(h1_klines) >= 60:
-            closes = [float(k.get("close", 0)) for k in h1_klines]
+        timeframes = ("15m", "1h", "4h")
+        sma_periods = (5, 20, 60)
+        for interval in timeframes:
+            interval_klines = snapshot.klines.get(interval, []) if snapshot.klines else []
+            if not interval_klines:
+                continue
 
-            # RSI(14)
+            closes = [float(k.get("close", 0)) for k in interval_klines]
+            if not closes or all(c == 0 for c in closes):
+                continue
+
+            current_price = closes[-1]
+
             rsi = self._calculate_rsi(closes, 14)
             if rsi is not None:
-                self._data_pool.update_indicator("RSI_14", round(rsi, 2))
+                self._data_pool.update_indicator(f"RSI_14_{interval}", round(rsi, 2))
+                if interval == "1h":
+                    self._data_pool.update_indicator("RSI_14", round(rsi, 2))
 
-            # SMA(60)
-            if len(closes) >= 60:
-                sma_60 = sum(closes[-60:]) / 60
-                current_price = closes[-1]
-                position = "above" if current_price > sma_60 else "below"
-                distance_percent = ((current_price - sma_60) / sma_60) * 100
-                self._data_pool.update_indicator(
-                    "SMA_60",
-                    {
-                        "value": round(sma_60, 6),
-                        "price_position": position,
-                        "distance_percent": round(distance_percent, 2),
-                    },
+            for period in sma_periods:
+                if len(closes) < period:
+                    continue
+                sma_value = sum(closes[-period:]) / period
+                position = "above" if current_price > sma_value else "below"
+                distance_percent = (
+                    ((current_price - sma_value) / sma_value) * 100 if sma_value > 0 else 0.0
                 )
+                sma_payload = {
+                    "value": round(sma_value, 6),
+                    "price_position": position,
+                    "distance_percent": round(distance_percent, 2),
+                }
+                self._data_pool.update_indicator(f"SMA_{period}_{interval}", sma_payload)
+                if interval == "1h" and period == 60:
+                    self._data_pool.update_indicator("SMA_60", sma_payload)
 
-            # Bollinger Bands(20, 2)
-            if len(closes) >= 20:
-                bb = self._calculate_bollinger_bands(closes, 20, 2.0)
-                if bb:
-                    upper, middle, lower = bb
-                    current_price = closes[-1]
-                    self._data_pool.update_indicator(
-                        "BB_20",
-                        {
-                            "upper": round(upper, 6),
-                            "middle": round(middle, 6),
-                            "lower": round(lower, 6),
-                            "width_percent": round((upper - lower) / middle * 100, 2),
-                            "position": round((current_price - lower) / (upper - lower), 2)
-                            if upper != lower
-                            else 0.5,
-                        },
-                    )
+            macd = self._calculate_macd(closes, 12, 26, 9)
+            if macd:
+                macd_value, signal_value, histogram = macd
+                macd_payload = {
+                    "macd": round(macd_value, 6),
+                    "signal": round(signal_value, 6),
+                    "histogram": round(histogram, 6),
+                }
+                self._data_pool.update_indicator(
+                    f"MACD_12_26_9_{interval}",
+                    macd_payload,
+                )
+                if interval == "1h":
+                    self._data_pool.update_indicator("MACD_12_26_9", macd_payload)
+
+            bb = self._calculate_bollinger_bands(closes, 20, 2.0)
+            if bb:
+                upper, middle, lower = bb
+                width_percent = (upper - lower) / middle * 100 if middle > 0 else 0.0
+                bb_payload = {
+                    "upper": round(upper, 6),
+                    "middle": round(middle, 6),
+                    "lower": round(lower, 6),
+                    "width_percent": round(width_percent, 2),
+                    "position": round((current_price - lower) / (upper - lower), 2)
+                    if upper != lower
+                    else 0.5,
+                }
+                self._data_pool.update_indicator(f"BB_20_{interval}", bb_payload)
+                if interval == "1h":
+                    self._data_pool.update_indicator("BB_20", bb_payload)
 
         atr_values: list[float] = []
         weights = {"15m": 0.5, "1h": 0.3, "4h": 0.2}
@@ -589,6 +613,60 @@ class SignalAggregator:
 
         rs = avg_gain / avg_loss
         return 100 - (100 / (1 + rs))
+
+    def _calculate_ema(self, values: list[float], period: int) -> list[float]:
+        """Calculate EMA for a list of values."""
+        if len(values) < period:
+            return []
+
+        multiplier = 2 / (period + 1)
+        ema = [sum(values[:period]) / period]
+
+        for value in values[period:]:
+            ema.append((value - ema[-1]) * multiplier + ema[-1])
+
+        return ema
+
+    def _calculate_macd(
+        self,
+        closes: list[float],
+        fast_period: int,
+        slow_period: int,
+        signal_period: int,
+    ) -> tuple[float, float, float] | None:
+        """Calculate MACD, Signal, and Histogram."""
+        if len(closes) < slow_period + signal_period:
+            return None
+
+        fast_ema = self._calculate_ema(closes, fast_period)
+        slow_ema = self._calculate_ema(closes, slow_period)
+
+        if not fast_ema or not slow_ema:
+            return None
+
+        offset = slow_period - fast_period
+        if len(fast_ema) <= offset:
+            return None
+
+        fast_aligned = fast_ema[offset:]
+        if len(fast_aligned) != len(slow_ema):
+            min_len = min(len(fast_aligned), len(slow_ema))
+            fast_aligned = fast_aligned[-min_len:]
+            slow_ema = slow_ema[-min_len:]
+
+        macd_line = [f - s for f, s in zip(fast_aligned, slow_ema, strict=False)]
+        if len(macd_line) < signal_period:
+            return None
+
+        signal_line = self._calculate_ema(macd_line, signal_period)
+        if not signal_line:
+            return None
+
+        macd_value = macd_line[-1]
+        signal_value = signal_line[-1]
+        histogram = macd_value - signal_value
+
+        return macd_value, signal_value, histogram
 
     def _calculate_bollinger_bands(
         self, closes: list[float], period: int, std_dev: float

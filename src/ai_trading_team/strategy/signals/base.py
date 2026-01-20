@@ -30,6 +30,7 @@ class SignalSource(ABC):
         name: str,
         timeframes: list[Timeframe] | None = None,
         enabled: bool = True,
+        candle_gated: bool = False,
     ) -> None:
         """Initialize signal source.
 
@@ -41,11 +42,13 @@ class SignalSource(ABC):
         self._name = name
         self._timeframes = timeframes or list(Timeframe)
         self._enabled = enabled
+        self._candle_gated = candle_gated
 
         # State tracking per timeframe
         # Key: timeframe, Value: current state (implementation-specific)
         self._state: dict[Timeframe, Any] = {}
         self._last_update: dict[Timeframe, datetime] = {}
+        self._last_signal_candle: dict[Timeframe, Any] = {}
 
     @property
     def name(self) -> str:
@@ -100,6 +103,14 @@ class SignalSource(ABC):
         self._state[timeframe] = new_state
         self._last_update[timeframe] = datetime.now()
 
+        if signal and self._candle_gated:
+            candle_id = self._get_candle_id(snapshot, timeframe)
+            if candle_id is not None:
+                last_candle_id = self._last_signal_candle.get(timeframe)
+                if last_candle_id == candle_id:
+                    return None
+                self._last_signal_candle[timeframe] = candle_id
+
         return signal
 
     @abstractmethod
@@ -149,9 +160,11 @@ class SignalSource(ABC):
         if timeframe:
             self._state.pop(timeframe, None)
             self._last_update.pop(timeframe, None)
+            self._last_signal_candle.pop(timeframe, None)
         else:
             self._state.clear()
             self._last_update.clear()
+            self._last_signal_candle.clear()
 
     def get_state(self, timeframe: Timeframe) -> Any:
         """Get current state for a timeframe.
@@ -163,3 +176,14 @@ class SignalSource(ABC):
             Current state or None
         """
         return self._state.get(timeframe)
+
+    def _get_candle_id(self, snapshot: DataSnapshot, timeframe: Timeframe) -> Any | None:
+        if snapshot.klines is None:
+            return None
+        klines = snapshot.klines.get(timeframe.value, [])
+        if not klines:
+            return None
+        last = klines[-1]
+        if not isinstance(last, dict):
+            return None
+        return last.get("open_time") or last.get("close_time")

@@ -67,6 +67,7 @@ class RSIExtremeSignal(SignalSource):
         super().__init__(
             name="rsi_extreme",
             timeframes=timeframes or [Timeframe.H1],
+            candle_gated=True,
         )
         self._oversold = oversold_threshold
         self._overbought = overbought_threshold
@@ -119,7 +120,7 @@ class RSIExtremeSignal(SignalSource):
         """
         # Try to get RSI from indicators first
         indicators = snapshot.indicators or {}
-        rsi_key = f"RSI_{self._rsi_period}"
+        rsi_key = f"RSI_{self._rsi_period}_{timeframe.value}"
         rsi_value = indicators.get(rsi_key)
 
         # If not in indicators, calculate from klines

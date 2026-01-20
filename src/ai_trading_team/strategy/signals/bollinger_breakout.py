@@ -71,6 +71,7 @@ class BollingerBreakoutSignal(SignalSource):
         super().__init__(
             name="bollinger_breakout",
             timeframes=timeframes or ALL_TIMEFRAMES,
+            candle_gated=True,
         )
         self._period = period
         self._std_dev = std_dev
@@ -115,7 +116,7 @@ class BollingerBreakoutSignal(SignalSource):
         """
         # Try to get BB from indicators first
         indicators = snapshot.indicators or {}
-        bb_key = f"BB_{self._period}"
+        bb_key = f"BB_{self._period}_{timeframe.value}"
 
         bb_data = indicators.get(bb_key)
         if bb_data and isinstance(bb_data, dict):
