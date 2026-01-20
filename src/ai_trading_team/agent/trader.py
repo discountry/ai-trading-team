@@ -49,10 +49,14 @@ class LangChainTradingAgent:
             min_samples=self._volatility_min_samples,
             volatility_multiplier=self._volatility_multiplier,  # Threshold = 80% of average
         )
-        self._oi_history: deque[tuple[datetime, float]] = deque(maxlen=1000)
+        self._oi_history: dict[str, deque[tuple[datetime, float]]] = {
+            "15m": deque(maxlen=1000),
+            "1h": deque(maxlen=1000),
+            "4h": deque(maxlen=1000),
+        }
+        self._oi_current: tuple[datetime, float] | None = None
         self._oi_windows: tuple[tuple[str, int], ...] = (("15m", 15), ("1h", 60), ("4h", 240))
         self._oi_series_points = 5
-        self._oi_min_interval_seconds = 120.0
 
     def _load_prompts(self) -> dict[str, str]:
         """Load prompts based on config.trading.prompt_style.
@@ -589,29 +593,30 @@ class LangChainTradingAgent:
             return
         if ts is None:
             ts = datetime.now()
-        if self._oi_history:
-            last_ts = self._oi_history[-1][0]
-            if (ts - last_ts).total_seconds() < self._oi_min_interval_seconds:
-                return
-        self._oi_history.append((ts, value))
+        self._oi_current = (ts, value)
 
-    def backfill_open_interest(self, history: list[dict[str, Any]]) -> int:
+    def backfill_open_interest(self, history_by_period: dict[str, list[dict[str, Any]]]) -> int:
         """Backfill open interest history with REST data."""
-        if not history:
+        if not history_by_period:
             return 0
-        entries: list[tuple[datetime, float]] = []
-        for item in history:
-            value, ts = self._extract_open_interest(item)
-            if value is None or ts is None:
+        total = 0
+        for period, history in history_by_period.items():
+            if period not in self._oi_history:
                 continue
-            entries.append((ts, value))
-        if not entries:
-            return 0
-        entries.sort(key=lambda x: x[0])
-        self._oi_history.clear()
-        for ts, value in entries:
-            self._oi_history.append((ts, value))
-        return len(self._oi_history)
+            entries: list[tuple[datetime, float]] = []
+            for item in history:
+                value, ts = self._extract_open_interest(item)
+                if value is None or ts is None:
+                    continue
+                entries.append((ts, value))
+            if not entries:
+                continue
+            entries.sort(key=lambda x: x[0])
+            self._oi_history[period].clear()
+            for ts, value in entries:
+                self._oi_history[period].append((ts, value))
+            total += len(entries)
+        return total
 
     def volatility_ready(self) -> bool:
         """Return True when volatility analyzer has enough samples."""
@@ -671,6 +676,20 @@ class LangChainTradingAgent:
             return value
         if isinstance(value, int | float):
             return datetime.fromtimestamp(value / 1000 if value > 1e12 else value)
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return None
+            try:
+                numeric = float(raw)
+            except ValueError:
+                numeric = None
+            if numeric is not None:
+                return datetime.fromtimestamp(numeric / 1000 if numeric > 1e12 else numeric)
+            try:
+                return datetime.fromisoformat(raw)
+            except (TypeError, ValueError):
+                return None
         try:
             return datetime.fromisoformat(str(value))
         except (TypeError, ValueError):
@@ -679,9 +698,10 @@ class LangChainTradingAgent:
     def _format_open_interest_context(self, snapshot: DataSnapshot) -> tuple[str, str]:
         if snapshot.open_interest:
             self.update_open_interest(snapshot.open_interest)
-        if not self._oi_history:
+        current = self._oi_current or self._latest_oi_from_history()
+        if not current:
             return "N/A", "N/A"
-        ts, value = self._oi_history[-1]
+        ts, value = current
         ts_str = ts.isoformat() if ts else ""
         oi_str = f"{value:,.0f}"
         if ts_str:
@@ -692,10 +712,14 @@ class LangChainTradingAgent:
     def _format_open_interest_series(self, now_ts: datetime, current: float) -> str:
         parts: list[str] = []
         for label, minutes in self._oi_windows:
+            history = self._oi_history.get(label)
             values: list[float | None] = [current]
             for i in range(1, self._oi_series_points + 1):
                 cutoff = now_ts - timedelta(minutes=minutes * i)
-                values.append(self._find_oi_value(cutoff))
+                if history:
+                    values.append(self._find_oi_value(history, cutoff))
+                else:
+                    values.append(None)
             changes: list[str] = []
             for i in range(self._oi_series_points):
                 latest = values[i]
@@ -708,11 +732,25 @@ class LangChainTradingAgent:
             parts.append(f"{label}: {', '.join(changes)}")
         return " | ".join(parts) if parts else "N/A"
 
-    def _find_oi_value(self, cutoff: datetime) -> float | None:
-        for ts, value in reversed(self._oi_history):
+    def _find_oi_value(
+        self,
+        history: deque[tuple[datetime, float]],
+        cutoff: datetime,
+    ) -> float | None:
+        for ts, value in reversed(history):
             if ts <= cutoff:
                 return value
         return None
+
+    def _latest_oi_from_history(self) -> tuple[datetime, float] | None:
+        latest: tuple[datetime, float] | None = None
+        for history in self._oi_history.values():
+            if not history:
+                continue
+            ts, value = history[-1]
+            if latest is None or ts > latest[0]:
+                latest = (ts, value)
+        return latest
 
     def _format_indicators(self, indicators: dict[str, Any]) -> str:
         """Format indicators dict for AI context.

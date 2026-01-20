@@ -1339,19 +1339,17 @@ class TradingBot:
 
     async def _backfill_open_interest(self) -> int:
         rest_client = self._data_manager._rest_client
-        history: list[dict[str, Any]] = []
+        history_by_period: dict[str, list[dict[str, Any]]] = {}
         for period in ("15m", "1h", "4h"):
             try:
-                history.extend(
-                    await rest_client.get_open_interest_history(
-                        self._binance_symbol,
-                        period=period,
-                        limit=1000,
-                    )
+                history_by_period[period] = await rest_client.get_open_interest_history(
+                    self._binance_symbol,
+                    period=period,
+                    limit=30,
                 )
             except Exception as e:
                 self._logger.debug(f"Failed to backfill OI ({period}): {e}")
-        return self._agent.backfill_open_interest(history)
+        return self._agent.backfill_open_interest(history_by_period)
 
     async def _state_save_loop(self) -> None:
         """Periodically save state to disk."""

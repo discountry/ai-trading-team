@@ -117,7 +117,7 @@ class BinanceRestClient:
         self,
         symbol: str,
         interval: str,
-        limit: int = 500,
+        limit: int = 30,
     ) -> list[Kline]:
         """Get historical klines.
 
@@ -298,14 +298,14 @@ class BinanceRestClient:
         self,
         symbol: str,
         period: str = "15m",
-        limit: int = 1000,
+        limit: int = 500,
     ) -> list[dict[str, Any]]:
         """Get open interest history (latest 1 month).
 
         Args:
             symbol: Trading pair
             period: Time period (5m, 15m, 30m, 1h, 2h, 4h, 6h, 12h, 1d)
-            limit: Number of points (max 1000)
+            limit: Number of points (default 30, max 500)
 
         Returns:
             List of open interest history records
