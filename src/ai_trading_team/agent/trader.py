@@ -50,9 +50,9 @@ class LangChainTradingAgent:
             volatility_multiplier=self._volatility_multiplier,  # Threshold = 80% of average
         )
         self._oi_history: dict[str, deque[tuple[datetime, float]]] = {
-            "15m": deque(maxlen=1000),
-            "1h": deque(maxlen=1000),
-            "4h": deque(maxlen=1000),
+            "15m": deque(maxlen=30),
+            "1h": deque(maxlen=30),
+            "4h": deque(maxlen=30),
         }
         self._oi_current: tuple[datetime, float] | None = None
         self._oi_windows: tuple[tuple[str, int], ...] = (("15m", 15), ("1h", 60), ("4h", 240))

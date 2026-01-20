@@ -1392,6 +1392,8 @@ class TradingBot:
 
     async def _market_metrics_loop(self) -> None:
         """Periodically fetch funding rate, long/short ratio, etc."""
+        last_oi_hist_refresh = 0.0
+        oi_hist_interval = 300.0
         while self._running:
             try:
                 rest_client = self._data_manager._rest_client
@@ -1442,6 +1444,29 @@ class TradingBot:
                     self._data_pool.update_mark_price(mark)
                 except Exception as e:
                     self._logger.debug(f"Failed to fetch mark price: {e}")
+
+                try:
+                    now_ts = asyncio.get_event_loop().time()
+                    if now_ts - last_oi_hist_refresh >= oi_hist_interval:
+                        last_oi_hist_refresh = now_ts
+                        history_by_period: dict[str, list[dict[str, Any]]] = {}
+                        for period in ("15m", "1h", "4h"):
+                            try:
+                                history_by_period[period] = (
+                                    await rest_client.get_open_interest_history(
+                                        self._binance_symbol,
+                                        period=period,
+                                        limit=30,
+                                    )
+                                )
+                            except Exception as e:
+                                self._logger.debug(
+                                    f"Failed to refresh OI history ({period}): {e}"
+                                )
+                        if history_by_period:
+                            self._agent.backfill_open_interest(history_by_period)
+                except Exception as e:
+                    self._logger.debug(f"Failed to refresh OI history: {e}")
 
             except Exception as e:
                 self._logger.error(f"Error in market metrics loop: {e}")

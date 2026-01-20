@@ -75,6 +75,7 @@ class LongShortRatioSignal(SignalSource):
 
         # Track last triggered direction to avoid duplicate signals
         self._last_triggered: dict[Timeframe, str | None] = {}
+        self._last_sample_ts: dict[Timeframe, datetime] = {}
 
     def _get_readings(self, timeframe: Timeframe) -> deque[LSRatioReading]:
         """Get or create readings deque for timeframe."""
@@ -82,6 +83,29 @@ class LongShortRatioSignal(SignalSource):
             self._readings[timeframe] = deque(maxlen=100)
             self._last_triggered[timeframe] = None
         return self._readings[timeframe]
+
+    def _parse_timestamp(self, value: Any) -> datetime | None:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, int | float):
+            return datetime.fromtimestamp(value / 1000 if value > 1e12 else value)
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return None
+            try:
+                numeric = float(raw)
+            except ValueError:
+                numeric = None
+            if numeric is not None:
+                return datetime.fromtimestamp(numeric / 1000 if numeric > 1e12 else numeric)
+            try:
+                return datetime.fromisoformat(raw)
+            except (TypeError, ValueError):
+                return None
+        return None
 
     def _compute_state(
         self,
@@ -127,14 +151,20 @@ class LongShortRatioSignal(SignalSource):
                 return None
 
         current_ratio = float(current_ratio)
-        now = datetime.now()
+        data_ts = self._parse_timestamp(ls_data.get("timestamp") or ls_data.get("time"))
+        if data_ts is None:
+            data_ts = datetime.now()
+        last_ts = self._last_sample_ts.get(timeframe)
+        if last_ts and data_ts <= last_ts:
+            return None
+        self._last_sample_ts[timeframe] = data_ts
 
         # Add current reading
         readings = self._get_readings(timeframe)
-        readings.append(LSRatioReading(timestamp=now, ratio=current_ratio))
+        readings.append(LSRatioReading(timestamp=data_ts, ratio=current_ratio))
 
         # Calculate change over window
-        cutoff = now - timedelta(minutes=self._window_minutes)
+        cutoff = data_ts - timedelta(minutes=self._window_minutes)
         old_readings = [r for r in readings if r.timestamp <= cutoff]
 
         if not old_readings:
