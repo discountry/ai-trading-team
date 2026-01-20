@@ -1,6 +1,7 @@
 """Test LLM response parsing for various formats."""
 
 import json
+
 import pytest
 
 
@@ -102,23 +103,23 @@ class TestParseResponse:
 
     def test_json_in_code_block(self):
         """JSON in markdown code block is extracted."""
-        response = '''Some text before
+        response = """Some text before
 ```json
 {
   "action": "open",
   "side": "long"
 }
 ```
-Some text after'''
+Some text after"""
         data = parse_response(response)
         assert data["action"] == "open"
         assert data["side"] == "long"
 
     def test_json_in_plain_code_block(self):
         """JSON in plain code block (no json marker) is extracted."""
-        response = '''```
+        response = """```
 {"action": "close", "reason": "test"}
-```'''
+```"""
         data = parse_response(response)
         assert data["action"] == "close"
         assert data["reason"] == "test"
@@ -132,7 +133,7 @@ Some text after'''
 
     def test_json_with_newlines(self):
         """JSON with newlines in code block is extracted."""
-        response = '''```json
+        response = """```json
 {
   "action": "open",
   "symbol": "BTC/USDT",
@@ -143,7 +144,7 @@ Some text after'''
   "stop_loss_price": 0.1420,
   "reason": "做空信号分析..."
 }
-```'''
+```"""
         data = parse_response(response)
         assert data["action"] == "open"
         assert data["side"] == "short"
@@ -170,7 +171,7 @@ class TestFullPipeline:
                 "type": "thinking",
             },
             {
-                "text": '''```json
+                "text": """```json
 {
   "action": "open",
   "symbol": "BTC/USDT",
@@ -181,7 +182,7 @@ class TestFullPipeline:
   "stop_loss_price": 0.1420,
   "reason": "做空信号分析"
 }
-```''',
+```""",
                 "type": "text",
             },
         ]

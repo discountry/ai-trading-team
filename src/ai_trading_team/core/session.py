@@ -419,7 +419,5 @@ class SessionManager:
             return
 
         # Remove add operations from history when position closes
-        self._state.operations = [
-            op for op in self._state.operations if op.get("action") != "add"
-        ]
+        self._state.operations = [op for op in self._state.operations if op.get("action") != "add"]
         self._dirty = True

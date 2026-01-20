@@ -1,6 +1,7 @@
 """Health check module - periodic status reporting."""
 
 import asyncio
+import contextlib
 import logging
 from dataclasses import dataclass
 from datetime import datetime
@@ -76,10 +77,8 @@ class HealthMonitor:
         self._running = False
         if self._task:
             self._task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._task
-            except asyncio.CancelledError:
-                pass
             self._task = None
         logger.info("Health monitor stopped")
 
@@ -117,9 +116,7 @@ class HealthMonitor:
         overall = "🟢" if all_ok else "🔴"
         status_line = " | ".join(status_parts)
 
-        logger.info(
-            f"{overall} Health #{self._check_count} [{uptime}] {status_line}"
-        )
+        logger.info(f"{overall} Health #{self._check_count} [{uptime}] {status_line}")
 
     def _collect_statuses(self) -> list[ModuleStatus]:
         """Collect status from all modules."""
@@ -160,9 +157,7 @@ class HealthMonitor:
                 )
             )
         else:
-            statuses.append(
-                ModuleStatus(name="Data", connected=False, details="no ticker")
-            )
+            statuses.append(ModuleStatus(name="Data", connected=False, details="no ticker"))
 
         # 4. State machine
         if self._state_machine:
@@ -189,9 +184,7 @@ class HealthMonitor:
                 )
             )
         else:
-            statuses.append(
-                ModuleStatus(name="Pos", connected=True, details="none")
-            )
+            statuses.append(ModuleStatus(name="Pos", connected=True, details="none"))
 
         return statuses
 

@@ -3,7 +3,7 @@
 import logging
 import uuid
 from datetime import datetime
-from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_UP
+from decimal import ROUND_DOWN, ROUND_UP, Decimal, InvalidOperation
 from typing import Any
 
 from weex_sdk import AsyncWeexClient
@@ -90,7 +90,7 @@ class WEEXExecutor:
         if isinstance(value, Decimal):
             return str(value)
         if hasattr(value, "value"):
-            return getattr(value, "value")
+            return value.value
         return value
 
     def _truncate_explanation(self, explanation: str, limit: int = 1000) -> str:

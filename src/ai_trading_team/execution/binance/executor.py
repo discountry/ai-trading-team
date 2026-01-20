@@ -202,9 +202,9 @@ class BinanceExecutor:
             data.get("totalMarginBalance") or data.get("totalWalletBalance")
         )
         available_balance = self._decimal_or_zero(data.get("availableBalance"))
-        used_margin = self._decimal_or_zero(data.get("totalPositionInitialMargin")) + self._decimal_or_zero(
-            data.get("totalOpenOrderInitialMargin")
-        )
+        used_margin = self._decimal_or_zero(
+            data.get("totalPositionInitialMargin")
+        ) + self._decimal_or_zero(data.get("totalOpenOrderInitialMargin"))
         unrealized_pnl = self._decimal_or_zero(data.get("totalUnrealizedProfit"))
 
         return Account(

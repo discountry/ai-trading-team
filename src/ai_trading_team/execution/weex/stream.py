@@ -10,6 +10,7 @@ from weex_sdk import AsyncWeexWebSocket
 
 logger = logging.getLogger(__name__)
 
+
 def _patch_websockets_headers() -> None:
     try:
         import websockets

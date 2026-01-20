@@ -16,6 +16,7 @@ from ai_trading_team.config import Config
 from ai_trading_team.core.data_pool import DataSnapshot
 from ai_trading_team.core.signal_queue import StrategySignal
 from ai_trading_team.core.types import OrderType, Side
+from ai_trading_team.indicators.volatility import VolatilityAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,12 @@ class LangChainTradingAgent:
         self._llm_timeout_seconds = 60.0
         self._llm = self._create_llm()
         self._prompts = self._load_prompts()
+        # Dynamic volatility analyzer - adapts to each symbol's characteristics
+        self._volatility_analyzer = VolatilityAnalyzer(
+            history_size=100,
+            min_samples=20,
+            volatility_multiplier=0.8,  # Threshold = 80% of average
+        )
 
     def _load_prompts(self) -> dict[str, str]:
         """Load prompts based on config.trading.prompt_style.
@@ -156,7 +163,7 @@ class LangChainTradingAgent:
 
             return decision
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             latency_ms = (time.time() - start_time) * 1000
             logger.error("Agent timeout after 60 seconds")
             return AgentDecision(
@@ -283,7 +290,7 @@ class LangChainTradingAgent:
         def _parse_float(value: Any) -> float | None:
             if value is None:
                 return None
-            if isinstance(value, (int, float)):
+            if isinstance(value, int | float):
                 return float(value)
             if isinstance(value, str):
                 raw = value.strip().lower()
@@ -329,9 +336,7 @@ class LangChainTradingAgent:
             price=_parse_float(data.get("price")),
             order_type=order_type,
             stop_loss_price=_parse_float(data.get("stop_loss_price")),
-            take_profit_price=_parse_float(
-                data.get("take_profit_price", data.get("take_profit"))
-            ),
+            take_profit_price=_parse_float(data.get("take_profit_price", data.get("take_profit"))),
             reason=data.get("reason", "No reason provided"),
         )
 
@@ -391,12 +396,25 @@ class LangChainTradingAgent:
         if snapshot.indicators:
             indicators_str = self._format_indicators(snapshot.indicators)
 
-        # Format ATR (multi-timeframe)
+        # Format ATR (multi-timeframe) and update volatility analyzer
         atr_str = "N/A"
+        atr_15m, atr_1h, atr_4h = None, None, None
         if snapshot.indicators:
             atr_str = self._format_atr(snapshot.indicators)
+            # Extract ATR values for volatility analyzer
+            atr_15m = snapshot.indicators.get("ATR_14_15m")
+            atr_1h = snapshot.indicators.get("ATR_14_1h")
+            atr_4h = snapshot.indicators.get("ATR_14_4h")
         if atr_str == "N/A" and snapshot.klines:
             atr_str = self._format_atr_from_klines(snapshot.klines)
+            # Calculate ATR from klines for volatility analyzer
+            atr_15m = self._calculate_atr_pct(snapshot.klines.get("15m", []), 14)
+            atr_1h = self._calculate_atr_pct(snapshot.klines.get("1h", []), 14)
+            atr_4h = self._calculate_atr_pct(snapshot.klines.get("4h", []), 14)
+
+        # Update volatility analyzer with latest ATR values
+        self._volatility_analyzer.update(atr_15m, atr_1h, atr_4h)
+        volatility_analysis = self._volatility_analyzer.format_for_prompt()
 
         # Format funding rate
         funding_str = "N/A"
@@ -438,9 +456,15 @@ class LangChainTradingAgent:
                     size = 0.0
 
                 side_value = str(pos.get("side", "")).lower()
-                if current_price and entry_price > 0 and size > 0 and side_value in (
-                    "long",
-                    "short",
+                if (
+                    current_price
+                    and entry_price > 0
+                    and size > 0
+                    and side_value
+                    in (
+                        "long",
+                        "short",
+                    )
                 ):
                     if side_value == "long":
                         pnl_numeric = (current_price - entry_price) * size
@@ -506,6 +530,7 @@ class LangChainTradingAgent:
             "orderbook": orderbook_str,
             "indicators": indicators_str,
             "atr": atr_str,
+            "volatility_analysis": volatility_analysis,
             "funding_rate": funding_str,
             "long_short_ratio": ls_ratio_str,
             "position": position_str,
@@ -550,10 +575,10 @@ class LangChainTradingAgent:
         for interval in ("15m", "1h", "4h"):
             key = f"ATR_14_{interval}"
             value = indicators.get(key)
-            if isinstance(value, (int, float)):
+            if isinstance(value, int | float):
                 atr_values.append(f"{interval}:{value:.4f}%")
         composite = indicators.get("ATR_14_COMPOSITE")
-        if isinstance(composite, (int, float)):
+        if isinstance(composite, int | float):
             atr_values.append(f"composite:{composite:.4f}%")
         return ", ".join(atr_values) if atr_values else "N/A"
 
@@ -713,7 +738,7 @@ class LangChainTradingAgent:
 
             return decision
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             latency_ms = (time.time() - start_time) * 1000
             logger.error("Profit signal timeout after 60 seconds")
             return AgentDecision(

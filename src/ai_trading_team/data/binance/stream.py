@@ -147,9 +147,7 @@ class BinanceStreamClient:
             logger.info(f"Subscribed to kline stream: {symbol_lower}@{kline_interval}")
 
             # Start raw depth WebSocket (bypass buggy SDK parsing)
-            self._depth_task = asyncio.create_task(
-                self._run_depth_stream(symbol_lower)
-            )
+            self._depth_task = asyncio.create_task(self._run_depth_stream(symbol_lower))
             logger.info(f"Started raw depth stream: {symbol_lower}@depth10")
 
         except Exception as e:

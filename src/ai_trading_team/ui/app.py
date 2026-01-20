@@ -90,6 +90,7 @@ class TradingApp(App[None]):
             except Exception as e:
                 self.log.error(f"UI update error: {e}")
                 import traceback
+
                 self.log.error(traceback.format_exc())
 
             await asyncio.sleep(1.0)  # Update every second
