@@ -38,4 +38,4 @@ htmlcov/
 
 sessions/*.json
 scripts/*.py
-logs/*.log
+logs/*.*
