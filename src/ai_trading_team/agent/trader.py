@@ -132,82 +132,116 @@ class LangChainTradingAgent:
             HumanMessage(content=self._prompts["decision"].format(**context)),
         ]
 
-        try:
-            # Invoke the LLM
-            response = await asyncio.wait_for(
-                self._llm.ainvoke(messages),
-                timeout=self._llm_timeout_seconds,
-            )
-            raw_content = response.content
+        # Retry logic for JSON parsing failures
+        max_retries = 2
+        last_error: Exception | None = None
 
-            # Extract text content from response (handles thinking blocks, etc.)
-            text_content = self._extract_text_content(raw_content)
+        for attempt in range(max_retries + 1):
+            try:
+                # Invoke the LLM
+                response = await asyncio.wait_for(
+                    self._llm.ainvoke(messages),
+                    timeout=self._llm_timeout_seconds,
+                )
+                raw_content = response.content
 
-            # Parse the response
-            command = self.parse_response(text_content)
+                # Extract text content from response (handles thinking blocks, etc.)
+                text_content = self._extract_text_content(raw_content)
 
-            # Calculate latency
-            latency_ms = (time.time() - start_time) * 1000
+                # Parse the response
+                command = self.parse_response(text_content)
 
-            # Get token usage if available
-            prompt_tokens = 0
-            completion_tokens = 0
-            if hasattr(response, "usage_metadata") and response.usage_metadata:
-                prompt_tokens = response.usage_metadata.get("input_tokens", 0)
-                completion_tokens = response.usage_metadata.get("output_tokens", 0)
+                # Calculate latency
+                latency_ms = (time.time() - start_time) * 1000
 
-            decision = AgentDecision(
-                signal_type=signal.signal_type.value,
-                signal_data=signal.data,
-                market_snapshot=self._snapshot_to_dict(snapshot),
-                command=command,
-                timestamp=datetime.now(),
-                model="MiniMax-M2.1",
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                latency_ms=latency_ms,
-            )
+                # Get token usage if available
+                prompt_tokens = 0
+                completion_tokens = 0
+                if hasattr(response, "usage_metadata") and response.usage_metadata:
+                    prompt_tokens = response.usage_metadata.get("input_tokens", 0)
+                    completion_tokens = response.usage_metadata.get("output_tokens", 0)
 
-            logger.info(
-                f"Agent decision: action={command.action.value}, "
-                f"side={command.side}, reason={command.reason[:50]}..."
-            )
+                decision = AgentDecision(
+                    signal_type=signal.signal_type.value,
+                    signal_data=signal.data,
+                    market_snapshot=self._snapshot_to_dict(snapshot),
+                    command=command,
+                    timestamp=datetime.now(),
+                    model="MiniMax-M2.1",
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    latency_ms=latency_ms,
+                )
 
-            return decision
+                if attempt > 0:
+                    logger.info(f"Agent succeeded on retry {attempt}")
 
-        except TimeoutError:
-            latency_ms = (time.time() - start_time) * 1000
-            logger.error("Agent timeout after 60 seconds")
-            return AgentDecision(
-                signal_type=signal.signal_type.value,
-                signal_data=signal.data,
-                market_snapshot=self._snapshot_to_dict(snapshot),
-                command=AgentCommand(
-                    action=AgentAction.OBSERVE,
-                    symbol=self._symbol,
-                    reason="Agent timeout after 60 seconds. Observing for safety.",
-                ),
-                timestamp=datetime.now(),
-                model="MiniMax-M2.1",
-                latency_ms=latency_ms,
-            )
-        except Exception as e:
-            logger.error(f"Agent processing error: {e}")
-            # Return observe command on error
-            latency_ms = (time.time() - start_time) * 1000
-            return AgentDecision(
-                signal_type=signal.signal_type.value,
-                signal_data=signal.data,
-                market_snapshot=self._snapshot_to_dict(snapshot),
-                command=AgentCommand(
-                    action=AgentAction.OBSERVE,
-                    symbol=self._symbol,
-                    reason=f"Agent error: {e}. Observing for safety.",
-                ),
-                timestamp=datetime.now(),
-                model="MiniMax-M2.1",
-                latency_ms=latency_ms,
-            )
+                logger.info(
+                    f"Agent decision: action={command.action.value}, "
+                    f"side={command.side}, reason={command.reason[:50]}..."
+                )
+
+                return decision
+
+            except TimeoutError:
+                latency_ms = (time.time() - start_time) * 1000
+                logger.error("Agent timeout after 60 seconds")
+                return AgentDecision(
+                    signal_type=signal.signal_type.value,
+                    signal_data=signal.data,
+                    market_snapshot=self._snapshot_to_dict(snapshot),
+                    command=AgentCommand(
+                        action=AgentAction.OBSERVE,
+                        symbol=self._symbol,
+                        reason="Agent timeout after 60 seconds. Observing for safety.",
+                    ),
+                    timestamp=datetime.now(),
+                    model="MiniMax-M2.1",
+                    latency_ms=latency_ms,
+                )
+            except ValueError as e:
+                # JSON parsing errors - retry if attempts remaining
+                last_error = e
+                if attempt < max_retries:
+                    logger.warning(
+                        f"Agent JSON parse error (attempt {attempt + 1}/{max_retries + 1}): {e}. Retrying..."
+                    )
+                    continue
+                # Fall through to return OBSERVE after all retries exhausted
+            except Exception as e:
+                # Other errors - don't retry
+                logger.error(f"Agent processing error: {e}")
+                latency_ms = (time.time() - start_time) * 1000
+                return AgentDecision(
+                    signal_type=signal.signal_type.value,
+                    signal_data=signal.data,
+                    market_snapshot=self._snapshot_to_dict(snapshot),
+                    command=AgentCommand(
+                        action=AgentAction.OBSERVE,
+                        symbol=self._symbol,
+                        reason=f"Agent error: {e}. Observing for safety.",
+                    ),
+                    timestamp=datetime.now(),
+                    model="MiniMax-M2.1",
+                    latency_ms=latency_ms,
+                )
+
+        # All retries exhausted for JSON parsing errors
+        logger.error(f"Agent JSON parse failed after {max_retries + 1} attempts: {last_error}")
+        latency_ms = (time.time() - start_time) * 1000
+        return AgentDecision(
+            signal_type=signal.signal_type.value,
+            signal_data=signal.data,
+            market_snapshot=self._snapshot_to_dict(snapshot),
+            command=AgentCommand(
+                action=AgentAction.OBSERVE,
+                symbol=self._symbol,
+                reason=f"Agent error after {max_retries + 1} attempts: {last_error}. Observing for safety.",
+            ),
+            timestamp=datetime.now(),
+            model="MiniMax-M2.1",
+            latency_ms=latency_ms,
+        )
 
     def _extract_text_content(self, content: Any) -> str:
         """Extract text content from LLM response.
