@@ -1,0 +1,6 @@
+# Core dependencies
+requests>=2.31.0
+aiohttp>=3.9.0
+websocket-client>=1.6.0
+websockets>=12.0
+typing-extensions>=4.0.0; python_version<"3.9"

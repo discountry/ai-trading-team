@@ -1,0 +1,109 @@
+name: Publish to PyPI
+
+on:
+  release:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      publish_to_testpypi:
+        description: 'Publish to TestPyPI'
+        required: false
+        default: 'false'
+        type: boolean
+      publish_to_pypi:
+        description: 'Publish to PyPI'
+        required: false
+        default: 'true'
+        type: boolean
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write  # 用于 PyPI trusted publishing (推荐方式)
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --upgrade "setuptools>=77.0.0" build twine "packaging>=24.2" "pkginfo>=1.11"
+      
+      - name: Clean build artifacts
+        run: |
+          rm -rf build/ dist/ *.egg-info/
+      
+      - name: Build package
+        run: python -m build
+      
+      - name: Check package
+        run: twine check dist/*
+      
+      - name: Publish to TestPyPI (on manual trigger)
+        if: |
+          github.event_name == 'workflow_dispatch' &&
+          inputs.publish_to_testpypi == true
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.TESTPYPI_API_TOKEN }}
+        run: |
+          if [ -z "$TWINE_PASSWORD" ]; then
+            echo "⚠️  TESTPYPI_API_TOKEN not configured. Skipping TestPyPI upload."
+            echo "💡 To enable TestPyPI publishing:"
+            echo "   1. Go to https://test.pypi.org/manage/account/token/"
+            echo "   2. Create an API token"
+            echo "   3. Add it as TESTPYPI_API_TOKEN in GitHub Secrets"
+            exit 0
+          fi
+          
+          # 验证 token 格式（应该以 pypi- 开头）
+          if [[ ! "$TWINE_PASSWORD" =~ ^pypi- ]]; then
+            echo "⚠️  Warning: Token should start with 'pypi-'"
+          fi
+          
+          echo "📤 Uploading to TestPyPI..."
+          twine upload --repository testpypi dist/*
+      
+      - name: Publish to PyPI (on release or manual)
+        if: |
+          (github.event_name == 'release' && github.event.action == 'created') ||
+          (github.event_name == 'workflow_dispatch' && inputs.publish_to_pypi == true)
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          if [ -z "$TWINE_PASSWORD" ]; then
+            echo "❌ PYPI_API_TOKEN not configured!"
+            echo "💡 To enable PyPI publishing:"
+            echo "   1. Go to https://pypi.org/manage/account/token/"
+            echo "   2. Create an API token (scope: entire account or project)"
+            echo "   3. Add it as PYPI_API_TOKEN in GitHub Secrets"
+            echo "      (Repository Settings → Secrets and variables → Actions)"
+            exit 1
+          fi
+          
+          # 验证 token 格式（应该以 pypi- 开头）
+          if [[ ! "$TWINE_PASSWORD" =~ ^pypi- ]]; then
+            echo "⚠️  Warning: Token should start with 'pypi-'"
+          fi
+          
+          echo "📤 Uploading to PyPI..."
+          twine upload dist/*
+      
+      - name: Show package info
+        if: always()
+        run: |
+          echo "📦 Built packages:"
+          ls -lh dist/
+          echo ""
+          echo "📋 Package contents:"
+          python -m zipfile -l dist/*.whl 2>/dev/null || echo "No wheel file"
+          tar -tzf dist/*.tar.gz 2>/dev/null | head -20 || echo "No source distribution"

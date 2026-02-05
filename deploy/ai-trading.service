@@ -1,0 +1,28 @@
+[Unit]
+Description=AI Trading Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/root/github/ai-trading-team
+Environment="PATH=/root/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+# 使用 uv 运行
+ExecStart=/root/.local/bin/uv run python main.py
+
+# 自动重启
+Restart=always
+RestartSec=10
+
+# 日志
+StandardOutput=journal
+StandardError=journal
+
+# 资源限制
+MemoryMax=2G
+CPUQuota=80%
+
+[Install]
+WantedBy=multi-user.target

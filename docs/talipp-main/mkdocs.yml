@@ -1,0 +1,125 @@
+site_name: talipp
+site_url: https://nardew.github.io/talipp/
+repo_name: nardew/talipp
+repo_url: https://github.com/nardew/talipp
+edit_uri: blob/main/docs/
+site_author: nardew
+site_description: talipp - incremental technical analysis library
+copyright: Copyright &copy; 2025 nardew
+theme:
+  name: material
+  language: en
+  custom_dir: docs/overrides
+  icon:
+    logo: material/library
+    repo: fontawesome/brands/github
+  palette:
+    # Palette toggle for automatic mode
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+    # Palette toggle for light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to dark mode
+    # Palette toggle for dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/weather-night
+        name: Switch to system preference
+  features:
+#    - announce.dismiss
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.annotate
+    - content.code.copy
+    - content.tooltips
+    - navigation.sections
+    - toc.follow
+markdown_extensions:
+  - abbr
+  - attr_list
+  - def_list
+  - admonition
+  - callouts
+  - footnotes
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.caret
+  - pymdownx.mark
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - pymdownx.inlinehilite:
+      style_plain_text: python
+  - pymdownx.magiclink
+  - pymdownx.tabbed:
+      alternate_style: true
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+  - tables
+  - toc:
+      permalink: "#"
+plugins:
+  - search
+  - link-marker
+  - gen-files:
+      scripts:
+        - scripts/gen_ref_pages.py
+  - literate-nav:
+      nav_file: SUMMARY.md
+  - mkdocstrings:
+      handlers:
+        python:
+          import:
+            - https://docs.python.org/3/objects.inv
+          paths: [ src ]
+          options:
+            docstring_options:
+              ignore_init_summary: true
+            docstring_section_style: table
+            show_if_no_docstring: false
+            filters: [ "!^_" ]
+            heading_level: 1
+            inherited_members: false
+            merge_init_into_class: true
+            separate_signature: true
+            show_root_heading: true
+            show_root_full_path: false
+            show_signature_annotations: true
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            signature_crossrefs: true
+            summary: true
+  - section-index
+  - git-revision-date-localized:
+extra:
+  version:
+    provider: mike
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - Features:
+      - Indicator catalogue: indicator-catalogue.md
+      - Indicator operations: indicator-operations.md
+      - Input types: input-types.md
+      - Output types: output-types.md
+      - Indicator chaining: indicator-chaining.md
+      - Timeframe auto-resampling: timeframe-sampling.md
+  - Guides:
+      - Serialization: serialization.md
+  - API reference: reference/

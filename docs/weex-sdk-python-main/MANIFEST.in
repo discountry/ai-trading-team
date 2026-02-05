@@ -1,0 +1,17 @@
+# 包含在源码分发包中的文件
+include README.md
+include LICENSE
+include requirements.txt
+include pyproject.toml
+recursive-include weex_sdk *.py
+
+# 排除测试文件
+global-exclude tests/
+
+# 排除文件
+global-exclude *.pyc
+global-exclude *.pyo
+global-exclude *.pyd
+global-exclude __pycache__
+global-exclude *.so
+global-exclude .DS_Store
